@@ -1,13 +1,23 @@
 Virtualized Storage
 ---
 
-Lightweight library for applications to virtualize the underlying storage system.
+Simple library to virtualize your application storage system.
 
 ## Quick Start
 
-## Reactive Events
 
-## In-memory Storage Grid
+## Table of Contents
+* []()
+
+## Storages
+
+### Built-in storages
+
+### Custom storages
+
+## Storage Grid
+
+## Reactive Events
 
 ## Developer Manual
 

@@ -1,4 +1,7 @@
-Virtualized Storage
+! Under development !
+---
+
+Virtualized StorageCancel changes
 ---
 
 Simple library to virtualize your application storage system.

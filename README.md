@@ -1,7 +1,7 @@
-Virtualized Storage
+Hamok
 ---
 
-Simple library to virtualize your application storage system.
+A convenient way to manage your application storage system. 
 
 ## Quick Start
 

@@ -1,22 +1,22 @@
 package io.github.balazskreith.hamok.storagegrid.messages;
 
 
-import io.github.balazskreith.hamok.racoon.events.EndpointStatesNotification;
-import io.github.balazskreith.hamok.racoon.events.HelloNotification;
-import io.github.balazskreith.hamok.raft.events.RaftAppendEntriesRequest;
-import io.github.balazskreith.hamok.raft.events.RaftAppendEntriesResponse;
-import io.github.balazskreith.hamok.raft.events.RaftVoteRequest;
-import io.github.balazskreith.hamok.raft.events.RaftVoteResponse;
+import io.github.balazskreith.hamok.raccoons.events.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.Base64;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.stream.Collectors;
 
 public class GridOpSerDe {
 
-    private final Base64.Encoder base64Encoder = Base64.getEncoder();
-    private final Base64.Decoder base64Decoder = Base64.getDecoder();
+    private static final Logger logger = LoggerFactory.getLogger(GridOpSerDe.class);
+
+//    private final Base64.Encoder base64Encoder = Base64.getEncoder();
+//    private final Base64.Decoder base64Decoder = Base64.getDecoder();
 
     public Message serializeEndpointStatesNotification(EndpointStatesNotification notification) {
         var result = new Message();
@@ -39,9 +39,9 @@ public class GridOpSerDe {
         );
     }
 
-    public Message serializeRaftAppendRequest(RaftAppendEntriesRequest request) {
+    public Message serializeRaftAppendRequestChunk(RaftAppendEntriesRequestChunk request) {
         var result = new Message();
-        result.type = MessageType.RAFT_APPEND_ENTRIES_REQUEST.name();
+        result.type = MessageType.RAFT_APPEND_ENTRIES_REQUEST_CHUNK.name();
         result.destinationId = request.peerId();
         result.raftLeaderId = request.leaderId();
         result.raftCommitIndex = request.leaderCommit();
@@ -49,32 +49,33 @@ public class GridOpSerDe {
         result.raftPrevLogTerm = request.prevLogTerm();
         result.raftPrevLogIndex = request.prevLogIndex();
         result.raftTerm = request.term();
-        if (request.entries() != null) {
-            result.entries = request.entries().stream()
-                    .map(base64Encoder::encodeToString)
-                    .collect(Collectors.toList());
-        } else {
-            result.entries = Collections.emptyList();
-        }
+        result.raftEntries = request.entry() == null ? Collections.emptyList() : List.of(request.entry());
+        result.requestId = request.requestId();
+        result.sequence = request.sequence();
+        result.lastMessage = request.lastMessage();
         return result;
     }
 
-    public RaftAppendEntriesRequest deserializeRaftAppendRequest(Message message) {
-        List<byte[]> entries;
-        if (message.entries == null) {
-            entries = Collections.emptyList();
-        } else {
-            entries = message.entries.stream().map(this.base64Decoder::decode).collect(Collectors.toList());
+    public RaftAppendEntriesRequestChunk deserializeRaftAppendRequestChunk(Message message) {
+        Message entry = null;
+        if (message.raftEntries != null && 0 < message.raftEntries.size()) {
+            entry = message.raftEntries.get(0);
+            if (1 < message.raftEntries.size()) {
+                logger.warn("More than one message received for RaftAppendRequestChunk. Only the first one will be processed");
+            }
         }
-        return new RaftAppendEntriesRequest(
+        return new RaftAppendEntriesRequestChunk(
                 message.destinationId,
                 message.raftTerm,
                 message.raftLeaderId,
                 message.raftPrevLogIndex,
                 message.raftPrevLogTerm,
-                entries,
+                entry,
                 message.raftCommitIndex,
-                message.raftLeaderNextIndex
+                message.raftLeaderNextIndex,
+                message.sequence,
+                message.lastMessage,
+                message.requestId
         );
     }
 
@@ -85,6 +86,7 @@ public class GridOpSerDe {
         result.raftTerm = response.term();
         result.destinationId = response.destinationPeerId();
         result.raftPeerNextIndex = response.peerNextIndex();
+        result.lastMessage = response.processed();
         return result;
     }
 
@@ -94,7 +96,8 @@ public class GridOpSerDe {
                 message.destinationId,
                 message.raftTerm,
                 message.success,
-                message.raftPeerNextIndex
+                message.raftPeerNextIndex,
+                message.lastMessage
         );
     }
 
@@ -141,17 +144,19 @@ public class GridOpSerDe {
         var result = new Message();
         result.type = MessageType.SUBMIT_REQUEST.name();
         result.requestId = request.requestId();
-        result.entries = List.of(base64Encoder.encodeToString(request.entry()));
+        result.raftEntries = List.of(request.entry());
+        result.destinationId = request.destinationId();
         return result;
     }
 
     public SubmitRequest deserializeSubmitRequest(Message message) {
-        byte[] entry = null;
-        if (message.entries != null) {
-            entry = this.base64Decoder.decode(message.entries.get(0));
+        Message entry = null;
+        if (message.raftEntries != null && 0 < message.raftEntries.size()) {
+            entry = message.raftEntries.get(0);
         }
         return new SubmitRequest(
                 message.requestId,
+                message.destinationId,
                 entry
         );
     }
@@ -177,6 +182,7 @@ public class GridOpSerDe {
         result.requestId = response.requestId();
         result.success = response.success();
         result.raftLeaderId = response.leaderId();
+        result.destinationId = response.destinationId();
         return result;
     }
 
@@ -194,21 +200,63 @@ public class GridOpSerDe {
         result.type = MessageType.STORAGE_SYNC_REQUEST.name();
         result.requestId = request.requestId();
         result.sourceId = request.sourceEndpointId();
+        result.destinationId = request.leaderId();
         return result;
     }
 
     public StorageSyncRequest deserializeStorageSyncRequest(Message request) {
         return new StorageSyncRequest(
                 request.requestId,
-                request.sourceId
+                request.sourceId,
+                request.destinationId
         );
     }
 
     public StorageSyncResponse deserializeStorageSyncResponse(Message message) {
-        return null;
+        var storageUpdateNotifications = new HashMap<String, Message>();
+        if (message.keys != null && message.raftEntries != null) {
+            var length = Math.min(message.keys.size(), message.raftEntries.size());
+            for (int i = 0; i < length; ++i) {
+                var bytes = message.keys.get(i);
+                var storageId = bytes != null ? new String(bytes) : "";
+                storageUpdateNotifications.put(storageId, message.raftEntries.get(i));
+            }
+        }
+        return new StorageSyncResponse(
+                message.requestId,
+                storageUpdateNotifications,
+                message.raftCommitIndex,
+                message.destinationId,
+                message.success,
+                message.raftLeaderId,
+                message.sequence,
+                message.lastMessage
+        );
     }
 
     public Message serializeStorageSyncResponse(StorageSyncResponse response) {
-        return null;
+        var result = new Message();
+        result.type = MessageType.STORAGE_SYNC_RESPONSE.name();
+        result.requestId = response.requestId();
+        result.destinationId = response.destinationId();
+        result.raftLeaderId = response.leaderId();
+        result.raftCommitIndex = response.commitIndex();
+        result.sequence = response.sequence();
+        result.lastMessage = response.lastMessage();
+        result.success = response.success();
+
+        if (response.storageUpdateNotifications() != null) {
+            result.keys = new LinkedList<>();
+            result.raftEntries = new LinkedList<>();
+            for (var entry : response.storageUpdateNotifications().entrySet()) {
+                var bytes = entry.getKey();
+                var storageId = bytes != null ? new String(bytes) : "";
+                result.raftEntries.add(entry.getValue());
+            }
+        } else {
+            result.keys = Collections.emptyList();
+            result.raftEntries = Collections.emptyList();
+        }
+        return result;
     }
 }

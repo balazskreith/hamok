@@ -36,7 +36,7 @@ class MapUtilsTest {
 
     @Test
     void shouldPutMapsTogether_1() {
-        var map = MapUtils.putAll(Map.of(1, 1), Map.of(1, 2));
+        var map = MapUtils.combineAll(Map.of(1, 1), Map.of(1, 2));
 
         Assertions.assertEquals(2, map.get(1));
     }

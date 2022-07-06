@@ -75,21 +75,6 @@ class ConcurrentMemoryStorageTest {
         Assertions.assertEquals(0, storage.getAll(Set.of(1, 2)).size());
     }
 
-    @Test
-    void shouldPutAndEvict() {
-        var storage = new ConcurrentMemoryStorage<Integer, String>();
-        storage.set(1, "one");
-        storage.evict(1);
-        Assertions.assertNull(storage.get(1));
-    }
-
-    @Test
-    void shouldPutAndEvictAll() {
-        var storage = new ConcurrentMemoryStorage<Integer, String>();
-        storage.setAll(Map.of(1, "one", 2, "two"));
-        storage.evictAll(Set.of(1, 2));
-        Assertions.assertEquals(0, storage.getAll(Set.of(1, 2)).size());
-    }
 
     @Test
     void shouldClose() throws Exception {
@@ -190,21 +175,7 @@ class ConcurrentMemoryStorageTest {
         storage.events().evictedEntry().subscribe(evictedEntry::complete);
 
         storage.set(1, "one");
-        storage.evict(1);
-
-        var modifiedEntry = evictedEntry.get(1000, TimeUnit.MILLISECONDS);
-        Assertions.assertEquals(1, modifiedEntry.getKey());
-        Assertions.assertEquals("one", modifiedEntry.getOldValue());
-    }
-
-    @Test
-    void shouldNotifyByEvicted_2() throws ExecutionException, InterruptedException, TimeoutException {
-        var evictedEntry = new CompletableFuture<ModifiedStorageEntry<Integer, String>>();
-        var storage = new ConcurrentMemoryStorage<Integer, String>();
-        storage.events().evictedEntry().subscribe(evictedEntry::complete);
-
-        storage.setAll(Map.of(1, "one"));
-        storage.evictAll(Set.of(1));
+        storage.clear();
 
         var modifiedEntry = evictedEntry.get(1000, TimeUnit.MILLISECONDS);
         Assertions.assertEquals(1, modifiedEntry.getKey());

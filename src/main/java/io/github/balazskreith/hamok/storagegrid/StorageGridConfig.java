@@ -1,11 +1,18 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import java.util.UUID;
-
 public record StorageGridConfig(
-        UUID localEndpointId,
         int requestTimeoutInMs
         )
 {
+        public static StorageGridConfig create() {
+                return new StorageGridConfig(
+                        3000
+                );
+        }
 
+        public StorageGridConfig copyAndSet(int requestTimeoutInMs) {
+                return new StorageGridConfig(
+                        requestTimeoutInMs
+                );
+        }
 }

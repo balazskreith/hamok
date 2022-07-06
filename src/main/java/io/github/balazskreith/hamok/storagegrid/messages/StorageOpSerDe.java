@@ -8,10 +8,10 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class StorageOpSerDe<K, V> {
-    private final Codec<K, String> keyCodec;
-    private final Codec<V, String> valueCodec;
+    private final Codec<K, byte[]> keyCodec;
+    private final Codec<V, byte[]> valueCodec;
 
-    public StorageOpSerDe(Codec<K, String> keyCodec, Codec<V, String> valueCodec) {
+    public StorageOpSerDe(Codec<K, byte[]> keyCodec, Codec<V, byte[]> valueCodec) {
         this.keyCodec = keyCodec;
         this.valueCodec = valueCodec;
     }
@@ -23,7 +23,7 @@ public class StorageOpSerDe<K, V> {
     }
 
     public ClearEntriesNotification deserializeClearEntriesNotification(Message message) {
-        return new ClearEntriesNotification();
+        return new ClearEntriesNotification(message.sourceId);
     }
 
     public Message serializeGetKeysRequest(GetKeysRequest request) {
@@ -273,31 +273,14 @@ public class StorageOpSerDe<K, V> {
         );
     }
 
-    public Message serializeEvictEntriesNotification(EvictEntriesNotification<K> notification) {
-        var result = new Message();
-        result.type = MessageType.EVICT_ENTRIES_NOTIFICATION.name();
-        result.keys = this.serializeKeys(notification.keys());
-        result.destinationId = notification.destinationEndpointId();
-        return result;
-    }
-
-    public EvictEntriesNotification<K> deserializeEvictEntriesNotification(Message message) {
-        var keys = this.deserializeKeys(message.keys);
-        return new EvictEntriesNotification<>(
-                keys,
-                message.sourceId,
-                message.destinationId
-        );
-    }
-
-    public KeyValuePair<List<String>, List<String>> serializeEntries(Map<K, V> entries) {
+    public KeyValuePair<List<byte[]>, List<byte[]>> serializeEntries(Map<K, V> entries) {
         if (entries == null || entries.size() < 1) {
             return KeyValuePair.of(Collections.EMPTY_LIST, Collections.EMPTY_LIST);
         }
         var keyEncoder = Mapper.create(this.keyCodec::encode);
         var valueEncoder = Mapper.create(this.valueCodec::encode);
-        var keys = new LinkedList<String>();
-        var values = new LinkedList<String>();
+        var keys = new LinkedList<byte[]>();
+        var values = new LinkedList<byte[]>();
         entries.forEach((entryKey, entryValue) -> {
             var key = keyEncoder.map(entryKey);
             var value = valueEncoder.map(entryValue);
@@ -310,7 +293,7 @@ public class StorageOpSerDe<K, V> {
         return KeyValuePair.of(keys, values);
     }
 
-    public Map<K, V> deserializeEntries(List<String> keys, List<String> values) {
+    public Map<K, V> deserializeEntries(List<byte[]> keys, List<byte[]> values) {
         var keyDecoder = Mapper.create(this.keyCodec::decode);
         var valueDecoder = Mapper.create(this.valueCodec::decode);
         var result = new HashMap<K, V>();
@@ -326,7 +309,7 @@ public class StorageOpSerDe<K, V> {
         return result;
     }
 
-    public List<String> serializeKeys(Collection<K> keys) {
+    public List<byte[]> serializeKeys(Collection<K> keys) {
         if (keys == null || keys.size() < 1) {
             return Collections.EMPTY_LIST;
         }
@@ -337,7 +320,7 @@ public class StorageOpSerDe<K, V> {
                 .collect(Collectors.toList());
     }
 
-    public Set<K> deserializeKeys(List<String> keys) {
+    public Set<K> deserializeKeys(List<byte[]> keys) {
         if (keys == null || keys.size() < 1) {
             return Collections.EMPTY_SET;
         }

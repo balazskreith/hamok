@@ -1,99 +1,108 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
-import io.github.balazskreith.hamok.mappings.Codec;
-import io.github.balazskreith.hamok.mappings.Mapper;
-import io.github.balazskreith.hamok.raft.LogEntry;
-import io.github.balazskreith.hamok.raft.RaftConfig;
-import io.github.balazskreith.hamok.raft.RxRaft;
-import io.github.balazskreith.hamok.storagegrid.discovery.Discovery;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.github.balazskreith.hamok.raccoons.RaccoonBuilder;
+import io.github.balazskreith.hamok.raccoons.RaccoonConfig;
+import io.github.balazskreith.hamok.storagegrid.messages.GridOpSerDe;
 import io.reactivex.rxjava3.core.Scheduler;
 
-import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 
 public class StorageGridBuilder {
 
     private UUID id = UUID.randomUUID();
-    private int endpointMaxIdleTimeInMs = 3000;
-    private int propagateInactiveEndpointTimeInMs = 10000;
-    private int endpointStateNotificationPeriodInMs = 1500;
-    private int requestTimeoutInMs = 5000;
-
-    private int raftElectionTimeoutInMs = 500;
-    private int raftElectionMaxRandomOffsetInMs = 1000;
-    private int raftHeartbeatInMs = 300;
-    private int raftApplicationCommittedSyncTimeoutInMs = 0;
-    private Map<Integer, LogEntry> raftLogsMap = null;
-    private int raftLogsExpirationTimeoutInMs = 60000;
-    private Scheduler raftScheduler = null;
-    private Executor raftExecutor = null;
-    private Codec<Message, byte[]> messageCodec;
     private String context;
+    private RaccoonBuilder raccoonBuilder = new RaccoonBuilder();
+    private RaccoonConfig raccoonConfig = RaccoonConfig.create();
+    private StorageGridConfig storageGridConfig = StorageGridConfig.create();
+    private GridOpSerDe gridOpSerDe = new GridOpSerDe();
 
     public StorageGridBuilder withContext(String value) {
         this.context = value;
         return this;
     }
 
-    public StorageGridBuilder withRaftMaxLogRetentionTimeInMs(int value) {
-        this.raftLogsExpirationTimeoutInMs = value;
+    public StorageGridBuilder withLocalEndpointId(UUID localEndpointId) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetId(localEndpointId);
+        return this;
+    }
+
+    public StorageGridBuilder withGridOpSerDe(GridOpSerDe gridOpSerDe) {
+        this.gridOpSerDe = this.gridOpSerDe;
+        return this;
+    }
+
+    public StorageGridBuilder withElectionTimeoutInMs(int electionTimeoutInMs) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetElectionTimeoutInMs(electionTimeoutInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withFollowerMaxIdleInMs(int followerMaxIdleInMs) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetFollowerMaxIdleInMs(followerMaxIdleInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withHeartbeatInMs(int heartbeatInMs) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetHeartbeatInMs(heartbeatInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withSendingHelloTimeoutInMs(int sendingHelloTimeoutInMs) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetSendingHelloTimeoutInMs(sendingHelloTimeoutInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withPeerMaxIdleTimeInMs(int peerMaxIdleTimeInMs) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetPeerMaxIdleTimeInMs(peerMaxIdleTimeInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withApplicationCommitIndexSyncTimeoutInMs(int applicationCommitIndexSyncTimeoutInMs) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetApplicationCommitIndexSyncTimeoutInMs(applicationCommitIndexSyncTimeoutInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withAutoDiscovery(boolean autoDiscovery) {
+        this.raccoonConfig = this.raccoonConfig.copyAndSetAutoDiscovery(autoDiscovery);
+        return this;
+    }
+
+    public StorageGridBuilder withRequestTimeoutInMs(int requestTimeoutInMs) {
+        this.storageGridConfig = storageGridConfig.copyAndSet(requestTimeoutInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withRaftMaxLogRetentionTimeInMs(int retentionTimeInMs) {
+        this.raccoonBuilder.withLogsExpirationTimeInMs(retentionTimeInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withBaseExecutor(Executor executor) {
+        this.raccoonBuilder.withExecutor(executor);
+        return this;
+    }
+
+    public StorageGridBuilder withBaseScheduler(Scheduler scheduler) {
+        this.raccoonBuilder.withScheduler(scheduler);
         return this;
     }
 
     StorageGridBuilder() {
-        Mapper<Message, byte[]> encoder = JsonUtils::objectToBytes;
-        Mapper<byte[], Message> decoder = bytes -> JsonUtils.<Message>bytesToObject(bytes, Message.class);
-        this.messageCodec = Codec.<Message, byte[]>create(
-                encoder,
-                decoder
-        );
+
     }
 
     public StorageGrid build() {
-        Objects.requireNonNull(this.messageCodec, "Codec for message must be given");
-        var raftConfig = this.createRaftConfig();
-        var raft = RxRaft.builder()
-                .withConfig(raftConfig)
-                .withLogsExpirationTimeInMs(this.raftLogsExpirationTimeoutInMs)
-                .withLogsMap(this.raftLogsMap)
-                .withScheduler(this.raftScheduler)
-                .withExecutor(this.raftExecutor)
+        var raccoon = this.raccoonBuilder
+                .withConfig(this.raccoonConfig)
                 .build();
-
-        var discovery = Discovery.builder()
-                .withLocalEndpointId(this.id)
-                .withMaxIdleRemoteEndpointId(this.endpointMaxIdleTimeInMs)
-                .build();
-
-        var config = this.createStorageGridConfig();
         var result = new StorageGrid(
-                config,
-                raft,
-                discovery,
-                this.messageCodec,
+                this.storageGridConfig,
+                raccoon,
+                this.gridOpSerDe,
                 this.context
         );
         return result;
     }
 
-    private StorageGridConfig createStorageGridConfig() {
-        return new StorageGridConfig(
-                this.id,
-                this.requestTimeoutInMs
-        );
-    }
 
-    private RaftConfig createRaftConfig() {
-        return new RaftConfig(
-                this.raftElectionTimeoutInMs,
-                this.raftElectionMaxRandomOffsetInMs,
-                this.raftHeartbeatInMs,
-                this.raftApplicationCommittedSyncTimeoutInMs,
-                this.id
-        );
-    }
 }

@@ -1,9 +1,14 @@
 plugins {
     id 'java'
+    id 'maven-publish'
 }
 
-group 'com.balazskreith.vstorage'
+group 'io.github.balazskreith.hamok'
 version '1.0.0-beta'
+
+
+apply plugin: 'maven-publish'
+apply plugin: 'signing'
 
 repositories {
     mavenCentral()
@@ -14,22 +19,51 @@ java {
     targetCompatibility = JavaVersion.toVersion("17")
 }
 
+//artifacts {
+//    archives javadocJar, sourcesJar
+//}
+//
+//signing {
+//    sign configurations.archives
+//}
 
 dependencies {
-//    runtimeOnly("ch.qos.logback:logback-classic")
-
     implementation "io.reactivex.rxjava3:rxjava:3.1.5"
-//    implementation group: 'org.slf4j', name: 'slf4j-api', version: '1.7.25'
-    implementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.13.3'
-
     implementation 'org.slf4j:slf4j-api:1.7.30'
-//    implementation 'org.apache.logging.log4j:log4j-slf4j-impl'
-
-//    implementation 'org.slf4j:slf4j-simple:1.7.30'
+//    implementation group: 'io.netty', name: 'netty-all', version: '4.1.79.Final'
 
     testImplementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.11'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
+    testImplementation group: 'io.netty', name: 'netty-all', version: '4.1.79.Final'
+
+    testImplementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.13.3'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
+}
+
+publishing {
+    repositories {
+        maven {
+            name = "OSSRH"
+            url = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+            credentials {
+                username = System.getenv("MAVEN_USERNAME")
+                password = System.getenv("MAVEN_PASSWORD")
+            }
+        }
+//        maven {
+//            name = "GitHubPackages"
+//            url = "https://maven.pkg.github.com/balazskreith/hamok"
+//            credentials {
+//                username = System.getenv("GITHUB_ACTOR")
+//                password = System.getenv("GITHUB_TOKEN")
+//            }
+//        }
+    }
+    publications {
+        gpr(MavenPublication) {
+            from(components.java)
+        }
+    }
 }
 
 test {

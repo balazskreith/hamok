@@ -11,6 +11,7 @@ import java.util.Objects;
  * @version $Revision: 646777 $ $Date: 2008-04-10 14:33:15 +0200 (Thu, 10 Apr 2008) $
  *
  * @author Stephen Colebourne
+ * @implNote This particular class is copied from Apache commons library
  */
 public interface UnmodifiableIterator extends Iterator {
 
@@ -32,5 +33,10 @@ public interface UnmodifiableIterator extends Iterator {
                 throw new UnsupportedOperationException("cannot perform remove() operation within Unmodifiable Iterator");
             }
         };
+    }
+
+    @Override
+    default void remove() {
+        throw new UnsupportedOperationException("cannot perform remove() operation within Unmodifiable Iterator");
     }
 }

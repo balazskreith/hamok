@@ -37,7 +37,7 @@ public interface BackupStorage<K, V> extends AutoCloseable {
     void evict(Set<K> keys);
 
     /**
-     * Clear all entries from local backups and send notification to remote backups
+     * Clear all entries from local backups
      */
     void clear();
 
@@ -47,4 +47,11 @@ public interface BackupStorage<K, V> extends AutoCloseable {
      * @return
      */
     Map<K, V> extract(UUID endpointId);
+
+    /**
+     * Measurements and state snapshot representing the underlying backup storage
+     * @return
+     */
+    BackupStats metrics();
+
 }

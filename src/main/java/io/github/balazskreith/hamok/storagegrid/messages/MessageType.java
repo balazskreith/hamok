@@ -27,7 +27,7 @@ public enum MessageType {
 
     RAFT_VOTE_REQUEST,
     RAFT_VOTE_RESPONSE,
-    RAFT_APPEND_ENTRIES_REQUEST,
+    RAFT_APPEND_ENTRIES_REQUEST_CHUNK,
     RAFT_APPEND_ENTRIES_RESPONSE,
 
     /**
@@ -100,10 +100,6 @@ public enum MessageType {
      * Notification about deleting
      */
     DELETE_ENTRIES_NOTIFICATION,
-    /**
-     * Evict entries
-     */
-    EVICT_ENTRIES_NOTIFICATION,
 
     /**
      * Clear entries notification

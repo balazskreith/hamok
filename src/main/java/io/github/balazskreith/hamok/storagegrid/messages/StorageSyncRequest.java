@@ -3,16 +3,29 @@ package io.github.balazskreith.hamok.storagegrid.messages;
 import java.util.Map;
 import java.util.UUID;
 
-public record StorageSyncRequest(UUID requestId, UUID sourceEndpointId) {
+public record StorageSyncRequest(
+        UUID requestId,
+        UUID sourceEndpointId,
+        UUID leaderId
+        ) {
 
-    public StorageSyncResponse createResponse(int commitIndex, Map<String, byte[]> storageUpdateNotifications, boolean success, UUID leaderId) {
+    public StorageSyncResponse createResponse(
+            int commitIndex,
+            Map<String, Message> storageUpdateNotifications,
+            boolean success,
+            UUID leaderId,
+            Integer sequence,
+            Boolean lastMessage
+            ) {
         return new StorageSyncResponse(
                 this.requestId,
                 storageUpdateNotifications,
                 commitIndex,
                 this.sourceEndpointId,
                 success,
-                leaderId
+                leaderId,
+                sequence,
+                lastMessage
         );
     }
 }

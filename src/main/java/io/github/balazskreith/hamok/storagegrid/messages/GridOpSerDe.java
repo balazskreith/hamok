@@ -1,12 +1,7 @@
 package io.github.balazskreith.hamok.storagegrid.messages;
 
 
-import io.github.balazskreith.hamok.racoon.events.EndpointStatesNotification;
-import io.github.balazskreith.hamok.racoon.events.HelloNotification;
-import io.github.balazskreith.hamok.raft.events.RaftAppendEntriesRequest;
-import io.github.balazskreith.hamok.raft.events.RaftAppendEntriesResponse;
-import io.github.balazskreith.hamok.raft.events.RaftVoteRequest;
-import io.github.balazskreith.hamok.raft.events.RaftVoteResponse;
+import io.github.balazskreith.hamok.raccoons.events.*;
 
 import java.util.Base64;
 import java.util.Collections;

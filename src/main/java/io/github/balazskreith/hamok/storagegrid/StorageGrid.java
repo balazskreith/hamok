@@ -5,14 +5,12 @@ import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.mappings.Codec;
-import io.github.balazskreith.hamok.racoon.events.HelloNotification;
-import io.github.balazskreith.hamok.raft.RxRaft;
-import io.github.balazskreith.hamok.storagegrid.discovery.Discovery;
+import io.github.balazskreith.hamok.raccoons.Raccoon;
+import io.github.balazskreith.hamok.raccoons.events.HelloNotification;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.disposables.Disposable;
-import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
@@ -46,21 +44,20 @@ public class StorageGrid implements Disposable {
 //    private final RxCollector<byte[]> sender;
 //    private final RxEmitter<byte[]> receiver;
 
-    private final RxRaft raft;
-    private final Discovery discovery;
+//    private final RxRaft raft;
+//    private final Discovery discovery;
+    private final Raccoon raccoon;
     private final String context;
     private final StorageGridTransport transport;
 
     StorageGrid(
             StorageGridConfig config,
-            RxRaft rxRaft,
-            Discovery discovery,
+            Raccoon raccoon,
             Codec<Message, byte[]> messageCodec,
             String context
             ) {
         this.config = config;
-        this.raft = rxRaft;
-        this.discovery = discovery;
+        this.raccoon = raccoon;
         this.messageCodec = messageCodec;
         this.context = context;
         this.transport = new StorageGridTransport() {
@@ -76,8 +73,7 @@ public class StorageGrid implements Disposable {
         };
 
         this.disposer = Disposer.builder()
-                .addDisposable(this.raft)
-                .addDisposable(this.discovery)
+                .addDisposable(this.raccoon)
                 .addSubject(this.sender)
                 .addSubject(this.receiver)
                 .addDisposable(this.receiver.subscribe(bytes -> {
@@ -96,48 +92,33 @@ public class StorageGrid implements Disposable {
                     }
 
                 }))
-                .addDisposable(this.raft.transport().sender().appendEntriesRequest().subscribe(raftAppendEntriesRequest -> {
+                .addDisposable(this.raccoon.outboundEvents().appendEntriesRequest().subscribe(raftAppendEntriesRequest -> {
                     var message = this.gridOpSerDe.serializeRaftAppendRequest(raftAppendEntriesRequest);
                     this.send(message);
                 }))
-                .addDisposable(this.raft.transport().sender().appendEntriesResponse().subscribe(raftAppendEntriesResponse -> {
+                .addDisposable(this.raccoon.outboundEvents().appendEntriesResponse().subscribe(raftAppendEntriesResponse -> {
                     var message = this.gridOpSerDe.serializeRaftAppendResponse(raftAppendEntriesResponse);
                     this.send(message);
                 }))
-                .addDisposable(this.raft.transport().sender().voteRequests().subscribe(raftVoteRequest -> {
+                .addDisposable(this.raccoon.outboundEvents().voteRequests().subscribe(raftVoteRequest -> {
                     var message = this.gridOpSerDe.serializeRaftVoteRequest(raftVoteRequest);
                     this.send(message);
                 }))
-                .addDisposable(this.raft.transport().sender().voteResponse().subscribe(raftVoteResponse -> {
+                .addDisposable(this.raccoon.outboundEvents().voteResponse().subscribe(raftVoteResponse -> {
                     var message = this.gridOpSerDe.serializeRaftVoteResponse(raftVoteResponse);
                     this.send(message);
                 }))
-                .addDisposable(this.discovery.events().remoteEndpointJoined().subscribe(remoteEndpointId -> {
-                    this.raft.addPeerId(remoteEndpointId);
-                    if (this.discovery.getRemoteEndpointIds().size() == 1) {
-                        this.raft.start();
-                    }
+                .addDisposable(this.raccoon.joinedRemotePeerId().subscribe(remoteEndpointId -> {
+
                 }))
-                .addDisposable(this.discovery.events().remoteEndpointDetached().subscribe(remoteEndpointId -> {
-                    this.raft.removePeerId(remoteEndpointId);
-                    if (this.discovery.getRemoteEndpointIds().size() == 0) {
-                        this.raft.stop();
-                        // if all endpoint is gone, we want to clear the inactive ones, otherwise we cannot form a
-                        // cluster when anyone comes back and its not new, so reset everything and then
-                        // listen and wait for the wonder
-                        this.discovery.reset();
-                        this.discovery.listen();
-                    }
+                .addDisposable(this.raccoon.detachedRemotePeerId().subscribe(remoteEndpointId -> {
+
                 }))
-                .addDisposable(this.raft.stackedState().subscribe(stackedEpoch -> {
-                    // raft has not been able to elect a new leader, so we need to reset the discovery process
-                    this.discovery.reset();
-                }))
-                .addDisposable(this.discovery.endpointStatesNotifications().subscribe(notification -> {
+                .addDisposable(this.raccoon.outboundEvents().endpointStateNotifications().subscribe(notification -> {
                     var message = this.gridOpSerDe.serializeEndpointStatesNotification(notification);
                     this.send(message);
                 }))
-                .addDisposable(this.discovery.helloNotifications().subscribe(notification -> {
+                .addDisposable(this.raccoon.outboundEvents().helloNotifications().subscribe(notification -> {
                     var leaderId = this.getLeaderId();
                     if (leaderId != null) {
                         notification = new HelloNotification(notification.sourcePeerId(), leaderId);
@@ -145,17 +126,10 @@ public class StorageGrid implements Disposable {
                     var message = this.gridOpSerDe.serializeHelloNotification(notification);
                     this.send(message);
                 }))
-                .addDisposable(this.raft.changedLeaderId().subscribe(newLeaderId -> {
-                    logger.info("New leaderId: {}", newLeaderId.get());
-                    if (newLeaderId.isEmpty()) {
-                        this.discovery.listen();
-                    } else if (UuidTools.notEquals(newLeaderId.get(), this.config.localEndpointId())) {
-                        this.discovery.listen();
-                    } else {
-                        this.discovery.propagate();
-                    }
+                .addDisposable(this.raccoon.changedLeaderId().subscribe(newLeaderId -> {
+
                 }))
-                .addDisposable(this.raft.committedEntries().subscribe(logEntry -> {
+                .addDisposable(this.raccoon.committedEntries().subscribe(logEntry -> {
                     // a commit should go to the upper layer.
                     // if it is not the leader then a request must be converted to notification,
                     // and it must be because when a new follower later join
@@ -176,7 +150,7 @@ public class StorageGrid implements Disposable {
                     }
                     this.dispatch(message);
                 }))
-                .addDisposable(this.raft.commitIndexSyncRequests().subscribe(signal -> {
+                .addDisposable(this.raccoon.commitIndexSyncRequests().subscribe(signal -> {
                     // this cannot be requested by the leader only the follower, so
                     // we are "sure" that our local endpoint is not the leader endpoint.
                     UUID requestId = UUID.randomUUID();
@@ -217,7 +191,7 @@ public class StorageGrid implements Disposable {
                                 logger.info("{} Storage {} is synchronized with the leader.", this.context, storage.getId());
                             }
                         }
-                        this.raft.setCommitIndex(response.commitIndex());
+                        this.raccoon.setCommitIndex(response.commitIndex());
                     });
                 }))
                 .onCompleted(() -> {
@@ -225,7 +199,7 @@ public class StorageGrid implements Disposable {
                 })
                 .build();
         logger.info("{} ({}) is created", this.getLocalEndpointId(), this.getContext());
-        this.discovery.listen();
+        this.raccoon.start();
     }
 
     private void dispatch(Message message) {
@@ -237,27 +211,27 @@ public class StorageGrid implements Disposable {
         switch(type) {
             case HELLO_NOTIFICATION -> {
                 var notification = this.gridOpSerDe.deserializeHelloNotification(message);
-                this.discovery.acceptHelloNotification(notification);
+                this.raccoon.inboundEvents().helloNotifications().onNext(notification);
             }
             case ENDPOINT_STATES_NOTIFICATION -> {
                 var notification = this.gridOpSerDe.deserializeEndpointStatesNotification(message);
-                this.discovery.acceptEndpointStatesNotification(notification);
+                this.raccoon.inboundEvents().endpointStateNotifications().onNext(notification);
             }
             case RAFT_APPEND_ENTRIES_REQUEST -> {
                 var appendEntriesRequest = this.gridOpSerDe.deserializeRaftAppendRequest(message);
-                this.raft.transport().receiver().appendEntriesRequest().onNext(appendEntriesRequest);
+                this.raccoon.inboundEvents().appendEntriesRequests().onNext(appendEntriesRequest);
             }
             case RAFT_APPEND_ENTRIES_RESPONSE -> {
                 var appendEntriesResponse = this.gridOpSerDe.deserializeRaftAppendResponse(message);
-                this.raft.transport().receiver().appendEntriesResponse().onNext(appendEntriesResponse);
+                this.raccoon.inboundEvents().appendEntriesResponses().onNext(appendEntriesResponse);
             }
             case RAFT_VOTE_REQUEST -> {
                 var voteRequest = this.gridOpSerDe.deserializeRaftVoteRequest(message);
-                this.raft.transport().receiver().voteRequests().onNext(voteRequest);
+                this.raccoon.inboundEvents().voteRequests().onNext(voteRequest);
             }
             case RAFT_VOTE_RESPONSE -> {
                 var voteResponse = this.gridOpSerDe.deserializeRaftVoteResponse(message);
-                this.raft.transport().receiver().voteResponse().onNext(voteResponse);
+                this.raccoon.inboundEvents().voteResponse().onNext(voteResponse);
             }
             case STORAGE_SYNC_REQUEST -> {
                 var request = this.gridOpSerDe.deserializeStorageSyncRequest(message);
@@ -274,7 +248,7 @@ public class StorageGrid implements Disposable {
                     return;
                 }
                 Map<String, byte[]> storageUpdateNotifications = new HashMap<>();
-                int savedCommitIndex = this.raft.getCommitIndex();
+                int savedCommitIndex = this.raccoon.getCommitIndex();
                 for (var it = this.storages.values().iterator(); it.hasNext(); ) {
                     var boundStorage = it.next();
                     var storage = boundStorage.storage();
@@ -325,8 +299,8 @@ public class StorageGrid implements Disposable {
                 var request = this.gridOpSerDe.deserializeSubmitRequest(message);
                 var response = this.gridOpSerDe.serializeSubmitResponse(request.createResponse(
                         message.sourceId,
-                        this.raft.submit(request.entry()) != null,
-                        this.raft.getLeaderId()
+                        this.raccoon.submit(request.entry()) != null,
+                        this.raccoon.getLeaderId()
                 ));
                 this.send(response);
             }
@@ -413,13 +387,20 @@ public class StorageGrid implements Disposable {
                 ;
     }
 
+    public void addRemoteEndpointId(UUID endpointId) {
+        this.raccoon.addRemotePeerId(endpointId);
+    }
+
+    public void removeRemoteEndpointId(UUID endpointId) {
+        this.raccoon.removeRemotePeerId(endpointId);
+    }
 
     public StorageGridTransport transport() {
         return StorageGridTransport.create(this.receiver, this.sender);
     }
 
     Set<UUID> getRemoteEndpointIds() {
-        return this.discovery.getRemoteEndpointIds();
+        return this.raccoon.getRemoteEndpointIds();
     }
 
     int getRequestTimeoutInMs() {
@@ -430,7 +411,7 @@ public class StorageGrid implements Disposable {
 //        logger.info("{} sending message (type: {}) to {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.destinationId);
         byte[] bytes;
         try {
-            message.sourceId = this.config.localEndpointId();
+            message.sourceId = this.raccoon.getId();
             bytes = this.messageCodec.encode(message);
         } catch (Throwable e) {
             logger.warn("{} Cannot encode message {}", this.context, JsonUtils.objectToString(message), e);
@@ -440,10 +421,10 @@ public class StorageGrid implements Disposable {
     }
 
     void submit(Message message) {
-        var leaderId = this.raft.getLeaderId();
+        var leaderId = this.raccoon.getLeaderId();
         if (leaderId == null) {
             var waitForLeader = new CompletableFuture<Optional<UUID>>();
-            this.raft.changedLeaderId().firstElement().subscribe(waitForLeader::complete);
+            this.raccoon.changedLeaderId().firstElement().subscribe(waitForLeader::complete);
             try {
                 var maybeNewLeaderId = waitForLeader.get(3000, TimeUnit.MILLISECONDS);
                 leaderId = maybeNewLeaderId.orElse(null);
@@ -464,9 +445,9 @@ public class StorageGrid implements Disposable {
             this.submit(message);
             return;
         }
-        if (leaderId == this.config.localEndpointId()) {
+        if (leaderId == this.raccoon.getId()) {
             // we can submit here.
-            if (this.raft.submit(entry) == null) {
+            if (this.raccoon.submit(entry) == null) {
                 logger.warn("{} Lead submit returned with null. retry", this.context);
                 this.submit(message);
                 return;
@@ -492,21 +473,19 @@ public class StorageGrid implements Disposable {
     }
 
     Observable<UUID> joinedRemoteEndpoints() {
-        return this.discovery.events().remoteEndpointJoined();
+        return this.raccoon.joinedRemotePeerId();
     }
 
     Observable<UUID> detachedRemoteEndpoints() {
-        return this.discovery.events().remoteEndpointDetached();
+        return this.raccoon.detachedRemotePeerId();
     }
 
     Observable<Long> inactivatedLocalEndpoint() {
-        return this.discovery.events()
-                .localEndpointInactivated()
-                .debounce(500, TimeUnit.MILLISECONDS, Schedulers.computation());
+        return this.raccoon.inactivatedLocalPeer();
     }
 
     Observable<Optional<UUID>> changedLeaderId() {
-        return this.raft.changedLeaderId();
+        return this.raccoon.changedLeaderId();
     }
 
     String getContext() {
@@ -514,11 +493,11 @@ public class StorageGrid implements Disposable {
     }
 
     UUID getLeaderId() {
-        return this.raft.getLeaderId();
+        return this.raccoon.getLeaderId();
     }
 
     UUID getLocalEndpointId() {
-        return this.config.localEndpointId();
+        return this.raccoon.getId();
     }
 
     private void addMessageAcceptor(String storageId, StorageEndpoint endpoint) {

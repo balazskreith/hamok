@@ -5,6 +5,7 @@ import io.github.balazskreith.hamok.StorageBatchedIterator;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
 import io.github.balazskreith.hamok.common.Disposer;
+import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
@@ -35,20 +36,24 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
         return new SeparatedStorageBuilder<>();
     }
 
+    private final FederatedStorageConfig config;
+
     private StorageEndpoint<K, V> endpoint;
     private final Storage<K, V> storage;
     private final BackupStorage<K, V> backupStorage;
     private final Disposer disposer;
     private final BinaryOperator<V> merge;
 
-    FederatedStorage(Storage<K, V> storage, StorageEndpoint<K, V> endpoint, BackupStorage<K, V> backupStorage, BinaryOperator<V> merge) {
+    FederatedStorage(Storage<K, V> storage, StorageEndpoint<K, V> endpoint, BackupStorage<K, V> backupStorage, BinaryOperator<V> merge, FederatedStorageConfig config) {
         this.merge = merge;
         this.backupStorage = backupStorage;
         this.storage = storage;
+        this.config = config;
         this.endpoint = endpoint
             .onGetEntriesRequest(getEntriesRequest -> {
                 var entries = this.storage.getAll(getEntriesRequest.keys());
                 var response = getEntriesRequest.createResponse(entries);
+                logger.info("{} get response: {}", this.endpoint.getLocalEndpointId(), response);
                 this.endpoint.sendGetEntriesResponse(response);
             }).onDeleteEntriesRequest(request -> {
                 var deletedKeys = this.storage.deleteAll(request.keys());
@@ -116,9 +121,14 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 depot.accept(localEntries);
                 depot.accept(savedEntries);
                 var updatedEntries = depot.get();
+                logger.info("{} detected remote endpoint {} detached. extracted entries from backup: {}, localEntries: {}, updatedEntries: {}",
+                        this.endpoint.getLocalEndpointId(),
+                        remoteEndpointId,
+                        JsonUtils.objectToString(savedEntries),
+                        JsonUtils.objectToString(localEntries),
+                        JsonUtils.objectToString(updatedEntries)
+                );
                 this.storage.setAll(updatedEntries);
-                // merge
-//                this.storage.setAll(savedEntries);
             }).onLocalEndpointReset(payload -> {
                 // at this point we know that this endpoint became inactive, and it is reinstated now.
                 // we need to request all keys from all remote endpoints, and evict them from here, because remote endpoints
@@ -131,8 +141,15 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
             });
 
         var collectedEvents = this.storage.events()
-                .collectOn(Schedulers.io(), 100, 1000);
+                .collectOn(Schedulers.io(), config.maxCollectedActualStorageTimeInMs(), config.maxCollectedActualStorageEvents());
+
         this.disposer = Disposer.builder()
+                .addDisposable(this.backupStorage.gaps().subscribe(missingKeys -> {
+                    var entries = this.storage.getAll(missingKeys);
+                    if (0 < entries.size()) {
+                        this.backupStorage.save(entries);
+                    }
+                }))
                 .addDisposable(collectedEvents.createdEntries().subscribe(modifiedStorageEntries -> {
                     var entries = modifiedStorageEntries.stream().collect(Collectors.toMap(
                             entry -> entry.getKey(),
@@ -163,7 +180,7 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                     var keys = modifiedStorageEntries.stream()
                             .map(entry -> entry.getKey())
                             .collect(Collectors.toSet());
-                    this.backupStorage.evict(keys);
+                    this.backupStorage.delete(keys);
                 }))
                 .build();
     }
@@ -229,6 +246,7 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public boolean delete(K key) {
+//        logger.info("Delete key: {}, value: {}", key, this.storage.get(key));
         return this.storage.delete(key);
     }
 

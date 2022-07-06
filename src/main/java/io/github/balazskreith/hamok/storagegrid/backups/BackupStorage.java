@@ -1,5 +1,7 @@
 package io.github.balazskreith.hamok.storagegrid.backups;
 
+import io.reactivex.rxjava3.core.Observable;
+
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -12,19 +14,24 @@ public interface BackupStorage<K, V> extends AutoCloseable {
     }
 
     /**
+     * Missing keys due to external events (remote endpoint detached)
+     * @return
+     */
+    Observable<Set<K>> gaps();
+    /**
      * Save entries on remote backups
      * @param entries
      */
     void save(Map<K, V> entries);
 
     /**
-     * Delete entries from local and remote backups
+     * Delete entries saved on remote endpoint backup storages
      * @param keys
      */
     void delete(Set<K> keys);
 
     /**
-     * Evict entries from local backups.
+     * Evict entries stored in local storage
      * @param keys
      */
     void evict(Set<K> keys);

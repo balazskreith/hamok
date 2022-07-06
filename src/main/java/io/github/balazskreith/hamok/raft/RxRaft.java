@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.Executor;
 
@@ -32,14 +33,18 @@ public class RxRaft implements Disposable, Closeable {
     private RaftConfig config;
     private Scheduler scheduler;
     private volatile boolean started = false;
+    private int flipFlopped = 0;
 
     private final SyncedProperties syncProperties;
     private final Events inboundEvents = new Events();
     private final Events outboundEvents = new Events();
     private final Subject<Integer> requestCommitIndexSync = PublishSubject.create();
     private final Subject<RaftState> changedState = PublishSubject.create();
+    private final Subject<Long> stackedState = PublishSubject.create();
     private final RxAtomicReference<UUID> actualLeaderId = new RxAtomicReference<>(null, UuidTools::equals);
     private final CompositeDisposable disposer = new CompositeDisposable();
+    private final RaftTransport transport;
+
     private Actor actualActor;
 
     private RxRaft() {
@@ -51,10 +56,11 @@ public class RxRaft implements Disposable, Closeable {
         this.disposer.add(Disposable.fromRunnable(() -> {
             this.stop();
         }));
+        this.transport = RaftTransport.createFrom(this.inboundEvents, this.outboundEvents);
     }
 
     public RaftTransport transport() {
-        return RaftTransport.createFrom(this.inboundEvents, this.outboundEvents);
+        return this.transport;
     }
 
     public RxRaft start() {
@@ -96,6 +102,9 @@ public class RxRaft implements Disposable, Closeable {
     public Observable<LogEntry> committedEntries() { return this.logs.committedEntries(); }
 
     public Observable<Integer> commitIndexSyncRequests() { return this.requestCommitIndexSync; }
+
+    public Observable<Long> stackedState() { return this.stackedState; }
+
 
     /**
      * Returns the index of the entry submitted to the leader
@@ -168,14 +177,25 @@ public class RxRaft implements Disposable, Closeable {
     void changeActor(AbstractActor nextActor) {
         RaftState changedState = nextActor != null ? nextActor.getState() : RaftState.NONE;
         synchronized (this) {
-            String predecessorName = null;
+            RaftState predecessorState = null;
             if (this.actualActor != null) {
-                predecessorName = this.actualActor.getState().name();
+                predecessorState = this.actualActor.getState();
                 this.actualActor.stop();
             }
             this.actualActor = nextActor;
             this.actualActor.start();
-            logger.info("{} changed role from {} to {}", config.id(), predecessorName, this.actualActor.getState().name());
+            logger.info("{} changed role from {} to {}", config.id(), predecessorState, this.actualActor.getState().name());
+            if (RaftState.FOLLOWER.equals(predecessorState) && RaftState.CANDIDATE.equals(nextActor.getState())) {
+                // this is also flip-flop, but we don't count this one
+                ++this.flipFlopped;
+            } else if (RaftState.CANDIDATE.equals(predecessorState) && RaftState.FOLLOWER.equals(nextActor.getState())) {
+                if (5 == this.flipFlopped) {
+                    // we are stacked, we should inform the upper layer and probably inactivate
+                    this.stackedState.onNext(Instant.now().toEpochMilli());
+                }
+            } else {
+                this.flipFlopped = 0;
+            }
         }
         this.changedState.onNext(changedState);
     }

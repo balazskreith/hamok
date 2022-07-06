@@ -4,47 +4,33 @@ import io.github.balazskreith.hamok.common.Disposer;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.core.Scheduler;
-import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 
-import java.util.List;
 import java.util.function.Supplier;
 
-public interface StorageGridTransport extends Disposable {
+public interface StorageGridTransport {
 
-    static StorageGridTransport create(Observer<List<byte[]>> receiver, Observable<List<byte[]>> sender) {
-        var inbound = PublishSubject.<List<byte[]>>create();
-        var outbound = PublishSubject.<List<byte[]>>create();
-        var disposer = Disposer.builder().addSubject(inbound).addSubject(outbound).build();
+    static StorageGridTransport create(Observer<byte[]> receiver, Observable<byte[]> sender) {
+        var inbound = PublishSubject.<byte[]>create();
+        var outbound = PublishSubject.<byte[]>create();
         inbound.subscribe(receiver);
         sender.subscribe(outbound);
         return new StorageGridTransport() {
-            @Override
-            public void dispose() {
-                if (!disposer.isDisposed()) {
-                    disposer.dispose();
-                }
-            }
 
             @Override
-            public boolean isDisposed() {
-                return disposer.isDisposed();
-            }
-
-            @Override
-            public Observer<List<byte[]>> getReceiver() {
+            public Observer<byte[]> getReceiver() {
                 return inbound;
             }
 
             @Override
-            public Observable<List<byte[]>> getSender() {
+            public Observable<byte[]> getSender() {
                 return outbound;
             }
         };
     }
 
-    Observer<List<byte[]>> getReceiver();
-    Observable<List<byte[]>> getSender();
+    Observer<byte[]> getReceiver();
+    Observable<byte[]> getSender();
 
     default void connectTo(StorageGridTransport peer) {
         this.getSender().subscribe(peer.getReceiver());
@@ -52,30 +38,21 @@ public interface StorageGridTransport extends Disposable {
     }
 
     default StorageGridTransport observeOn(Supplier<Scheduler> schedulerSupplier) {
-        var sender = PublishSubject.<List<byte[]>>create();
-        var receiver = PublishSubject.<List<byte[]>>create();
+        var sender = PublishSubject.<byte[]>create();
+        var receiver = PublishSubject.<byte[]>create();
+        var disposer = Disposer.builder().addSubject(sender).addSubject(receiver).build();
         this.getSender().observeOn(schedulerSupplier.get()).subscribe(sender);
         receiver.observeOn(schedulerSupplier.get()).subscribe(this.getReceiver());
         return new StorageGridTransport() {
-            @Override
-            public void dispose() {
-                if (!this.isDisposed()) {
-                    this.dispose();
-                }
-            }
+
 
             @Override
-            public boolean isDisposed() {
-                return this.isDisposed();
-            }
-
-            @Override
-            public Observer<List<byte[]>> getReceiver() {
+            public Observer<byte[]> getReceiver() {
                 return receiver;
             }
 
             @Override
-            public Observable<List<byte[]>> getSender() {
+            public Observable<byte[]> getSender() {
                 return sender;
             }
         };

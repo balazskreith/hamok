@@ -137,7 +137,7 @@ class Follower extends AbstractActor {
         }).addDisposable(Disposable.fromRunnable(() -> {
             synchronized (this) {
                 if (this.timer != null) {
-                    logger.info("{} dispose timer", this.getId());
+                    logger.debug("{} dispose timer", this.getId());
                     if (!this.timer.isDisposed()) {
                         this.timer.dispose();
                     }

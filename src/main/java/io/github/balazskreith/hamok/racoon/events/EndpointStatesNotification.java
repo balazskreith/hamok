@@ -1,4 +1,4 @@
-package io.github.balazskreith.hamok.storagegrid.messages;
+package io.github.balazskreith.hamok.racoon.events;
 
 import java.util.Set;
 import java.util.UUID;

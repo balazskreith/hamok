@@ -1,9 +1,14 @@
 package io.github.balazskreith.hamok.storagegrid.backups;
 
+import io.github.balazskreith.hamok.common.JsonUtils;
+import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.storagegrid.StorageEndpoint;
-import io.github.balazskreith.hamok.storagegrid.messages.EvictEntriesNotification;
+import io.github.balazskreith.hamok.storagegrid.messages.DeleteEntriesNotification;
 import io.github.balazskreith.hamok.storagegrid.messages.UpdateEntriesNotification;
+import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.subjects.PublishSubject;
+import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,8 +24,9 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
 
     private static final Logger logger = LoggerFactory.getLogger(ConcurrentMemoryBackupStorage.class);
 
+    private final Subject<Set<K>> gaps = PublishSubject.create();
     private final StorageEndpoint<K, V> endpoint;
-    private Map<K, StoredEntry<K, V>> storedEntries = new ConcurrentHashMap<>();
+    private Map<UUID, Map<K, V>> storedEntries = new ConcurrentHashMap<>();
     private Map<K, SavedEntry<K>> savedEntries = new ConcurrentHashMap<>();
     private Map<K, V> bufferedEntries = new ConcurrentHashMap<>();
     private Random random = new Random();
@@ -30,15 +36,16 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
     ConcurrentMemoryBackupStorage(StorageEndpoint<K, V> endpoint) {
         this.endpoint = endpoint.onUpdateEntriesNotification(notification -> {
             var remoteEndpointId = notification.sourceEndpointId();
-            var storedEntries = notification.entries().entrySet().stream().map(entry -> {
-                return new StoredEntry<K, V>(entry.getKey(), entry.getValue(), remoteEndpointId);
-            }).collect(Collectors.toMap(
-                    entry -> entry.key(),
-                    Function.identity()
-            ));
-            this.storedEntries.putAll(storedEntries);
+            var remoteEndpointStoredEntries = this.storedEntries.get(remoteEndpointId);
+            if (remoteEndpointStoredEntries == null) {
+                remoteEndpointStoredEntries = new ConcurrentHashMap<>();
+                this.storedEntries.put(remoteEndpointId, remoteEndpointStoredEntries);
+            }
+            remoteEndpointStoredEntries.putAll(notification.entries());
+            logger.info("{} received update notification for backups. {}. StoredEntries: {}", endpoint.getLocalEndpointId(), JsonUtils.objectToString(storedEntries), JsonUtils.objectToString(this.storedEntries));
         }).onDeleteEntriesNotification(notification -> {
             this.evict(notification.keys());
+            logger.debug("{} received delete notification for backups. {}. Stored entries: {}", endpoint.getLocalEndpointId(), notification.keys(), JsonUtils.objectToString(this.storedEntries));
         }).onRemoteEndpointJoined(remoteEndpointId -> {
             var oldList = this.remoteEndpointIdsListHolder.get();
             var newList = Stream.concat(oldList.stream(), List.of(remoteEndpointId).stream())
@@ -47,8 +54,17 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         }).onRemoteEndpointDetached(remoteEndpointId -> {
             var oldList = this.remoteEndpointIdsListHolder.get();
             var newList = oldList.stream()
-                    .filter(key -> !UuidTools.equals(key, remoteEndpointId)).collect(Collectors.toList());
+                    .filter(key -> !UuidTools.equals(key, remoteEndpointId))
+                    .collect(Collectors.toList());
             this.setRemoteEndpoints(newList);
+            var lostBackups = this.savedEntries.values().stream()
+                    .filter(savedEntry -> UuidTools.equals(remoteEndpointId, savedEntry.remoteEndpointId()))
+                    .map(SavedEntry::key)
+                    .collect(Collectors.toSet());
+            if (0 < lostBackups.size()) {
+                lostBackups.forEach(this.savedEntries::remove);
+                this.gaps.onNext(lostBackups);
+            }
         });
         var remoteEndpointsList = this.endpoint.getRemoteEndpointIds().stream().collect(Collectors.toList());
         this.setRemoteEndpoints(remoteEndpointsList);
@@ -67,6 +83,11 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             this.bufferedEntries.clear();
         }
         logger.info("{} Backup, hasRemoteEndpoint: {}", this.endpoint.getLocalEndpointId(), this.hasRemoteEndpoints.get());
+    }
+
+    @Override
+    public Observable<Set<K>> gaps() {
+        return this.gaps;
     }
 
     @Override
@@ -104,7 +125,6 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
                 this.saveEntries(remoteEndpointId, updatedEntries);
             });
         }
-        logger.info("{} saved {} entries. created: {}, updated: {}", this.endpoint.getLocalEndpointId(), entries.size(), toCreate.size(), toUpdate.size());
     }
 
     @Override
@@ -114,12 +134,9 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         }
         var toDelete = new HashMap<UUID, Set<K>>();
         keys.forEach(key -> {
-            var storedEntry = this.storedEntries.remove(key);
-            if (storedEntry != null) {
-                return;
-            }
-            var savedEntry = this.savedEntries.get(key);
+            var savedEntry = this.savedEntries.remove(key);
             if (savedEntry == null) {
+                this.bufferedEntries.remove(key);
                 return;
             }
             var remoteEndpointId = savedEntry.remoteEndpointId();
@@ -134,11 +151,8 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             return;
         }
         toDelete.forEach((remoteEndpointId, remoteKeys) -> {
-            var notification =  EvictEntriesNotification.<K>builder()
-                    .setDestinationEndpointId(remoteEndpointId)
-                    .setKeys(remoteKeys)
-                    .build();
-            this.endpoint.sendEvictedEntriesNotification(notification);
+            var notification =  new DeleteEntriesNotification<K>(null, remoteKeys, remoteEndpointId);
+            this.endpoint.sendDeleteEntriesNotification(notification);
         });
     }
 
@@ -147,9 +161,9 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         if (keys == null) {
             return;
         }
-        keys.stream()
-                .filter(key -> this.bufferedEntries.remove(key) == null)
-                .forEach(this.storedEntries::remove);
+        this.storedEntries.forEach((endpointId, storedEntries) -> {
+            keys.stream().forEach(this.storedEntries::remove);
+        });
     }
 
     @Override
@@ -157,17 +171,8 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         if (endpointId == null) {
             return Collections.emptyMap();
         }
-        var keys = this.storedEntries.values().stream()
-                .filter(entry -> UuidTools.equals(entry.remoteEndpointId(), endpointId))
-                .map(StoredEntry::key)
-                .collect(Collectors.toSet());
-        var result = keys.stream().map(this.storedEntries::remove)
-//                .filter(Objects::nonNull)
-                .collect(Collectors.toMap(
-                        entry -> entry.key(),
-                        entry -> entry.value()
-                ));
-        logger.info("{} Extracted {} entries for remote endpoint {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId);
+        var result = Utils.firstNonNull(this.storedEntries.remove(endpointId), Collections.<K, V>emptyMap());
+        logger.info("{} Extracted {} entries for remote endpoint {}. Stored Entries: {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId, JsonUtils.objectToString(this.storedEntries));
         return result;
     }
 
@@ -181,6 +186,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
                 .setEntries(entries)
                 .setDestinationEndpointId(remoteEndpointId)
                 .build();
+        logger.info("{} Save entries {} on endpoint {}", this.endpoint.getLocalEndpointId(), JsonUtils.objectToString(entries), remoteEndpointId);
         this.endpoint.sendUpdateEntriesNotification(notification);
         var toSave = entries.keySet().stream().map(key -> new SavedEntry<K>(key, remoteEndpointId)).collect(Collectors.toMap(
                 savedEntry -> savedEntry.key(),

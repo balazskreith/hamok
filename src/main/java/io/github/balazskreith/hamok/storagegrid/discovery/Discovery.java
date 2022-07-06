@@ -1,8 +1,9 @@
 package io.github.balazskreith.hamok.storagegrid.discovery;
 
 import io.github.balazskreith.hamok.common.Disposer;
-import io.github.balazskreith.hamok.storagegrid.messages.EndpointStatesNotification;
-import io.github.balazskreith.hamok.storagegrid.messages.HelloNotification;
+import io.github.balazskreith.hamok.common.SetUtils;
+import io.github.balazskreith.hamok.racoon.events.EndpointStatesNotification;
+import io.github.balazskreith.hamok.racoon.events.HelloNotification;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.Disposable;
@@ -13,7 +14,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
-import java.util.*;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -33,7 +37,7 @@ public class Discovery implements Disposable {
     Scheduler scheduler = Schedulers.computation();
     DiscoveryConfig config;
 
-    private AtomicReference<AbstractState> actual = new AtomicReference<>(new InactiveState(this));
+    private AtomicReference<AbstractState> actual = new AtomicReference<>(null);
 
     private final Subject<HelloNotification> outboundHelloNotifications = PublishSubject.<HelloNotification>create().toSerialized();
     private final Subject<EndpointStatesNotification> outboundEndpointNotification = PublishSubject.<EndpointStatesNotification>create().toSerialized();
@@ -52,12 +56,7 @@ public class Discovery implements Disposable {
         this.disposer = Disposer.builder()
                 .addSubject(this.outboundHelloNotifications)
                 .addSubject(this.outboundEndpointNotification)
-                .addDisposable(Disposable.fromRunnable(() -> {
-                    var timer = this.timer.getAndSet(null);
-                    if (timer != null && !timer.isDisposed()) {
-                        timer.dispose();
-                    }
-                }))
+                .addDisposable(Disposable.fromRunnable(this::stopTimer))
                 .build();
     }
 
@@ -65,44 +64,37 @@ public class Discovery implements Disposable {
      * Stop sending any messages and remove all discovered remote endpoints
      * Prevent being the lead, because it is already stopped
      */
-    public void inactivate() {
-        var state = this.actual.get();
-        if (States.INACTIVE.equals(state.name())) {
-            return;
-        }
-        if (!this.actual.compareAndSet(state, new InactiveState(this))) {
-            logger.warn("Tried to change the state from {} to {}, but concurrently another state change has been performed", state.name(), States.INACTIVE.name());
-            return;
-        }
-        this.stopTimer();
-        logger.info("State changed from {} to {}", state.name(), States.INACTIVE.name());
+    public void reset() {
+        Set.copyOf(this.activeRemoteEndpointIds.keySet()).forEach(this::detachedRemoteEndpointId);
+        this.inactiveRemoteEndpointIds.clear();
+        logger.info("{} Reset", this.getLocalEndpointId());
     }
 
 
     public void propagate() {
         var state = this.actual.get();
-        if (States.PROPAGATOR.equals(state.name())) {
+        if (state != null && States.PROPAGATOR.equals(state.name())) {
             return;
         }
         if (!this.actual.compareAndSet(state, new PropagatorState(this))) {
-            logger.warn("Tried to change the state from {} to {}, but concurrently another state change has been performed", state.name(), States.PROPAGATOR.name());
+            logger.warn("Tried to change the state from {} to {}, but concurrently another state change has been performed", state != null ? state.name() : null, States.PROPAGATOR.name());
             return;
         }
         this.startTimer();
-        logger.info("State changed from {} to {}", state.name(), States.PROPAGATOR.name());
+        logger.info("{} State changed from {} to {}", this.getLocalEndpointId(), state != null ? state.name() : null, States.PROPAGATOR.name());
     }
 
     public void listen() {
         var state = this.actual.get();
-        if (States.LISTENER.equals(state.name())) {
+        if (state != null && States.LISTENER.equals(state.name())) {
             return;
         }
         if (!this.actual.compareAndSet(state, new ListenerState(this))) {
-            logger.warn("Tried to change the state from {} to {}, but concurrently another state change has been performed", state.name(), States.LISTENER.name());
+            logger.warn("Tried to change the state from {} to {}, but concurrently another state change has been performed", state != null ? state.name() : null, States.LISTENER.name());
             return;
         }
         this.startTimer();
-        logger.info("State changed from {} to {}", state.name(), States.LISTENER.name());
+        logger.info("{} State changed from {} to {}", this.getLocalEndpointId(), state != null ? state.name() : null, States.LISTENER.name());
     }
 
     public Observable<HelloNotification> helloNotifications() {
@@ -128,7 +120,11 @@ public class Discovery implements Disposable {
         Disposable disposable = this.scheduler.createWorker().schedulePeriodically(
                 () -> {
                     var state = this.actual.get();
-                    Objects.requireNonNull(state);
+                    if (state == null) {
+                        logger.warn("State is null in discovery, timer will stop");
+                        this.stopTimer();
+                        return;
+                    }
                     state.run();
                 },
                 this.config.heartbeatInMs(),
@@ -163,56 +159,53 @@ public class Discovery implements Disposable {
 
 
     void resetLocalEndpoint() {
-
+        this.events.localEndpointInactivated.onNext(Instant.now().toEpochMilli());
     }
 
-    void setJoinedRemoteEndpoints(Set<UUID> joinedRemoteEndpointIds) {
-        if (joinedRemoteEndpointIds.size() < 1) {
+    void joinRemoteEndpoint(UUID joinedRemoteEndpointId) {
+        if (joinedRemoteEndpointId == null) {
             return;
         }
         var now = Instant.now().toEpochMilli();
-        for (var it = joinedRemoteEndpointIds.iterator(); it.hasNext(); ) {
-            var joinedRemoteEndpointId = it.next();
-            this.inactiveRemoteEndpointIds.remove(joinedRemoteEndpointId);
-            this.activeRemoteEndpointIds.put(joinedRemoteEndpointId, now);
-        }
+        this.inactiveRemoteEndpointIds.remove(joinedRemoteEndpointId);
+        this.activeRemoteEndpointIds.put(joinedRemoteEndpointId, now);
         var remoteEndpointIds = Set.copyOf(this.activeRemoteEndpointIds.keySet());
+        logger.info("{} join remote endpoint {}, set of remote endpoints {}", this.getLocalEndpointId(), joinedRemoteEndpointId, remoteEndpointIds);
         this.remoteEndpointIds.set(remoteEndpointIds);
-        joinedRemoteEndpointIds.forEach(this.events.remoteEndpointJoined::onNext);
+        this.events.remoteEndpointJoined.onNext(joinedRemoteEndpointId);
     }
 
-    void setDetachedRemoteEndpointIds(Set<UUID> detachedRemoteEndpointIds) {
-        if (detachedRemoteEndpointIds.size() < 1) {
+    void detachedRemoteEndpointId(UUID detachedRemoteEndpointId) {
+        if (detachedRemoteEndpointId == null) {
             return;
         }
         var now = Instant.now().toEpochMilli();
-        for (var it = detachedRemoteEndpointIds.iterator(); it.hasNext(); ) {
-            var detachedRemoteEndpointId = it.next();
-            this.activeRemoteEndpointIds.remove(detachedRemoteEndpointId);
-            this.inactiveRemoteEndpointIds.put(detachedRemoteEndpointId, now);
-        }
+        this.activeRemoteEndpointIds.remove(detachedRemoteEndpointId);
+        this.inactiveRemoteEndpointIds.put(detachedRemoteEndpointId, now);
         var remoteEndpointIds = Set.copyOf(this.activeRemoteEndpointIds.keySet());
+        logger.info("{} detach remote endpoint {}, set of remote endpoints {}", this.getLocalEndpointId(), detachedRemoteEndpointId, remoteEndpointIds);
         this.remoteEndpointIds.set(remoteEndpointIds);
-        detachedRemoteEndpointIds.forEach(this.events.remoteEndpointDetached::onNext);
+        this.events.remoteEndpointDetached.onNext(detachedRemoteEndpointId);
     }
 
     void sendEndpointStateNotifications(Set<UUID> remoteEndpointIds) {
         Set<UUID> activeEndpointIds;
         Set<UUID> inactiveEndpointIds;
         synchronized (this) {
-            activeEndpointIds = Set.copyOf(this.activeRemoteEndpointIds.keySet());
+            activeEndpointIds = SetUtils.addAll(Set.copyOf(this.activeRemoteEndpointIds.keySet()), Set.of(this.getLocalEndpointId()));
             inactiveEndpointIds = Set.copyOf(this.inactiveRemoteEndpointIds.keySet());
         }
         var localEndpointId = this.getLocalEndpointId();
         for (var it = remoteEndpointIds.iterator(); it.hasNext(); ) {
             var remoteEndpointId = it.next();
             var notification = new EndpointStatesNotification(localEndpointId, activeEndpointIds, inactiveEndpointIds, remoteEndpointId);
+            logger.info("{} send notification {}", this.getLocalEndpointId(), notification);
             this.outboundEndpointNotification.onNext(notification);
         }
     }
 
     void sendHelloNotification() {
-        var notification = new HelloNotification(this.config.localEndpointId());
+        var notification = new HelloNotification(this.config.localEndpointId(), null);
         this.outboundHelloNotifications.onNext(notification);
     }
 
@@ -235,9 +228,12 @@ public class Discovery implements Disposable {
 
 
     public void acceptHelloNotification(HelloNotification notification) {
+        logger.info("{} Received hello message from {}", this.getLocalEndpointId(), notification.sourcePeerId());
         var state = this.actual.get();
         if (state != null) {
             state.acceptHelloNotification(notification);
+        } else {
+            logger.warn("Received Hello notification, but no state is assigned");
         }
     }
 
@@ -245,6 +241,8 @@ public class Discovery implements Disposable {
         var state = this.actual.get();
         if (state != null) {
             state.acceptEndpointStateNotification(notification);
+        } else {
+            logger.warn("Received Endpoint State notification, but no state is assigned");
         }
     }
 }

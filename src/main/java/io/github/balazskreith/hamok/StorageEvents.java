@@ -82,13 +82,29 @@ public interface StorageEvents<K, V> extends Disposable {
     }
 
     default CollectedStorageEvents<K, V> collectOn(Scheduler scheduler, int maxTimeInMs, int maxItems) {
-        var timeoutController = new TimeoutController(maxTimeInMs, scheduler);
-        var createdEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
-        var updatedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
-        var deletedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
-        var expiredEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
-        var evictedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
-        var closingStorage = PublishSubject.<String>create();
+        if (maxItems < 1 && maxTimeInMs < 1) {
+            throw new IllegalStateException("Cannot collect events with the restriction of 0 timeout and 0 max items");
+        }
+        RxCollector<ModifiedStorageEntry<K, V>> createdEntries;
+        RxCollector<ModifiedStorageEntry<K, V>> updatedEntries;
+        RxCollector<ModifiedStorageEntry<K, V>> deletedEntries;
+        RxCollector<ModifiedStorageEntry<K, V>> expiredEntries;
+        RxCollector<ModifiedStorageEntry<K, V>> evictedEntries;
+        Subject<String> closingStorage = PublishSubject.<String>create();
+        if (0 < maxTimeInMs) {
+            var timeoutController = new TimeoutController(maxTimeInMs, scheduler);
+            createdEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
+            updatedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
+            deletedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
+            expiredEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
+            evictedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
+        } else {
+            createdEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
+            updatedEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
+            deletedEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
+            expiredEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
+            evictedEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
+        }
 
         this.createdEntry().subscribe(createdEntries);
         this.updatedEntry().subscribe(updatedEntries);

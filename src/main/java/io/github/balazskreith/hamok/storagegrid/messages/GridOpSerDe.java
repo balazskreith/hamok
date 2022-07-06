@@ -1,6 +1,8 @@
 package io.github.balazskreith.hamok.storagegrid.messages;
 
 
+import io.github.balazskreith.hamok.racoon.events.EndpointStatesNotification;
+import io.github.balazskreith.hamok.racoon.events.HelloNotification;
 import io.github.balazskreith.hamok.raft.events.RaftAppendEntriesRequest;
 import io.github.balazskreith.hamok.raft.events.RaftAppendEntriesResponse;
 import io.github.balazskreith.hamok.raft.events.RaftVoteRequest;
@@ -157,13 +159,15 @@ public class GridOpSerDe {
     public Message serializeHelloNotification(HelloNotification notification) {
         var result = new Message();
         result.type = MessageType.HELLO_NOTIFICATION.name();
-        result.sourceId = notification.sourceEndpointId();
+        result.sourceId = notification.sourcePeerId();
+        result.raftLeaderId = notification.raftLeaderId();
         return result;
     }
 
     public HelloNotification deserializeHelloNotification(Message message) {
         return new HelloNotification(
-                message.sourceId
+                message.sourceId,
+                message.raftLeaderId
         );
     }
 

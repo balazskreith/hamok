@@ -2,10 +2,21 @@ package io.github.balazskreith.hamok.raft.events;
 
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.disposables.Disposable;
 
-public interface EventReceiver {
+public interface EventReceiver extends Disposable {
     static EventReceiver createFrom(Events events) {
         return new EventReceiver() {
+            @Override
+            public void dispose() {
+                events.dispose();
+            }
+
+            @Override
+            public boolean isDisposed() {
+                return events.isDisposed();
+            }
+
             @Override
             public Observer<RaftVoteResponse> voteResponse() {
                 return events.voteResponse();

@@ -88,6 +88,7 @@ public class StorageEndpoint<K, V> implements Disposable {
             // this is not for this endpoint
             return;
         }
+//        logger.info("Message is received from {} type {}, protocol {}", message.sourceId, message.type, message.protocol);
         var type = MessageType.valueOf(message.type);
         switch (type) {
             case GET_ENTRIES_REQUEST -> this.getEntriesRequestSubject.onNext(message);
@@ -147,9 +148,9 @@ public class StorageEndpoint<K, V> implements Disposable {
         return this;
     }
 
-    public StorageEndpoint<K, V> onDeleteEntriesNotification(Consumer<EvictEntriesNotification<K>> listener) {
+    public StorageEndpoint<K, V> onDeleteEntriesNotification(Consumer<DeleteEntriesNotification<K>> listener) {
         this.deleteEntriesNotificationSubject
-                .map(this.messageSerDe::deserializeEvictEntriesNotification)
+                .map(this.messageSerDe::deserializeDeleteEntriesNotification)
                 .subscribe(listener);
         return this;
     }
@@ -291,6 +292,11 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .collect(Collectors.toSet());
     }
 
+    public void sendDeleteEntriesNotification(DeleteEntriesNotification<K> notification) {
+        var message = this.messageSerDe.serializeDeleteEntriesNotification(notification);
+        this.send(message);
+    }
+
     public void sendDeleteEntriesResponse(DeleteEntriesResponse<K> response) {
         var message = this.messageSerDe.serializeDeleteEntriesResponse(response);
         this.send(message);
@@ -401,7 +407,7 @@ public class StorageEndpoint<K, V> implements Disposable {
         } else {
             remoteEndpointIds = this.grid.getRemoteEndpointIds();
         }
-//        logger.info("Creating request at {} remote endpoints: {}", this.grid.getLocalEndpointId(), JsonUtils.objectToString(remoteEndpointIds));
+        logger.info("Creating request at {} ({}) remote endpoints: {}", this.grid.getLocalEndpointId(), this.grid.getContext(), JsonUtils.objectToString(remoteEndpointIds));
         if (remoteEndpointIds.size() < 1) {
             return Collections.emptyList();
         }
@@ -423,14 +429,17 @@ public class StorageEndpoint<K, V> implements Disposable {
         } catch (ExecutionException e) {
             logger.warn("Error occurred while processing request {} ", requestId , e);
             this.pendingRequests.remove(requestId);
+            message.requestId = UUID.randomUUID();
             return this.request(message, retried + 1);
         } catch (InterruptedException e) {
             logger.warn("Error occurred while processing request {} ", requestId, e);
             this.pendingRequests.remove(requestId);
+            message.requestId = UUID.randomUUID();
             return this.request(message, retried + 1);
         } catch (TimeoutException e) {
             logger.warn("Timeout occurred while processing request {} ", requestId, e);
             this.pendingRequests.remove(requestId);
+            message.requestId = UUID.randomUUID();
             return this.request(message, retried + 1);
         }
     }

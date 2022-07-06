@@ -2,8 +2,8 @@ package io.github.balazskreith.hamok.storagegrid.discovery;
 
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
-import io.github.balazskreith.hamok.storagegrid.messages.EndpointStatesNotification;
-import io.github.balazskreith.hamok.storagegrid.messages.HelloNotification;
+import io.github.balazskreith.hamok.racoon.events.EndpointStatesNotification;
+import io.github.balazskreith.hamok.racoon.events.HelloNotification;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +31,7 @@ class PropagatorState extends AbstractState {
     public void run() {
         var now = Instant.now().toEpochMilli();
         var elapsedInMs = now - this.lastPropagated.get();
-        if (this.base.config.endpointStateNotificationPeriodInMs() < elapsedInMs) {
+        if (elapsedInMs < this.base.config.endpointStateNotificationPeriodInMs()) {
             return;
         }
         var detachedEndpointIds = new HashSet<UUID>();
@@ -57,11 +57,11 @@ class PropagatorState extends AbstractState {
             reactivatedEndpointIds = Collections.EMPTY_SET;
         }
 
-        this.base.setDetachedRemoteEndpointIds(detachedEndpointIds);
+        detachedEndpointIds.forEach(this.base::detachedRemoteEndpointId);
         this.base.sendEndpointStateNotifications(remoteEndpointIds);
         // at this point we informed all the reactivated endpoints with the info they have been inactive,
         // so we can safely join them again.
-        this.base.setJoinedRemoteEndpoints(reactivatedEndpointIds);
+        reactivatedEndpointIds.forEach(this.base::joinRemoteEndpoint);
         this.lastPropagated.set(now);
 
     }
@@ -72,35 +72,35 @@ class PropagatorState extends AbstractState {
             // loopback?
             return;
         }
-        // there should be no two producers in the cluster
+        // there should be no two propagator in the cluster
         // so we are going to add the source as an endpoint and let the election process (raft)
-        // figure out who is the real leader
+        // figure out who is the true propagator
         var inactiveRemoteEndpointIds = this.base.getInactiveRemoteEndpointIds();
         var activeRemoteEndpointIds = this.base.getActiveRemoteEndpointIds();
+        var remoteEndpointId = notification.sourceEndpointId();
         if (inactiveRemoteEndpointIds.containsKey(notification.sourceEndpointId())) {
-            // if it was inactivated by anyone, and we get a notification from it as producer,
+            // if it was inactivated by anyone, and we get a notification from it as propagator,
             // then that endpoint should not be the producer, and the election process
             // has to handle to have only one producer in one cluster
             // until that we are not accepting anything from that producer
+            logger.warn("An inactive endpoint {} propagated an endpoints state message", remoteEndpointId);
             return;
         }
-        var remoteEndpointId = notification.sourceEndpointId();
         if (activeRemoteEndpointIds.put(remoteEndpointId, Instant.now().toEpochMilli()) == null) {
-            this.base.setJoinedRemoteEndpoints(Set.of(remoteEndpointId));
+            this.base.joinRemoteEndpoint(remoteEndpointId);
         }
     }
 
     @Override
     protected void acceptHelloNotification(HelloNotification notification) {
         var localEndpointId = this.base.getLocalEndpointId();
-        var remoteEndpointId = notification.sourceEndpointId();
+        var remoteEndpointId = notification.sourcePeerId();
         if (localEndpointId == remoteEndpointId) {
             // loopback?
             return;
         }
         var inactiveRemoteEndpointIds = this.base.getInactiveRemoteEndpointIds();
         var activeRemoteEndpointIds = this.base.getActiveRemoteEndpointIds();
-        var joinedRemoteEndpointIds = new HashSet<UUID>();
         var now = Instant.now().toEpochMilli();
         if (inactiveRemoteEndpointIds.containsKey(remoteEndpointId)) {
             // we must make sure that remote endpoint got the message that it was inactivated.
@@ -108,8 +108,7 @@ class PropagatorState extends AbstractState {
             return;
         }
         if (activeRemoteEndpointIds.put(remoteEndpointId, now) == null) {
-            joinedRemoteEndpointIds.add(remoteEndpointId);
+            this.base.joinRemoteEndpoint(remoteEndpointId);
         }
-        this.base.setJoinedRemoteEndpoints(joinedRemoteEndpointIds);
     }
 }

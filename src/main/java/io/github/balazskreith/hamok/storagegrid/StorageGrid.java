@@ -5,15 +5,16 @@ import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.mappings.Codec;
+import io.github.balazskreith.hamok.racoon.events.HelloNotification;
 import io.github.balazskreith.hamok.raft.RxRaft;
-import io.github.balazskreith.hamok.raft.events.RaftTransport;
-import io.github.balazskreith.hamok.rxutils.RxCollector;
-import io.github.balazskreith.hamok.rxutils.RxEmitter;
 import io.github.balazskreith.hamok.storagegrid.discovery.Discovery;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
 import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subjects.PublishSubject;
+import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,41 +36,50 @@ public class StorageGrid implements Disposable {
     private final Map<UUID, CompletableFuture<Message>> pendingRequests = new ConcurrentHashMap<>();
     private final Map<String, CorrespondedStorage> storages = new ConcurrentHashMap<>();
     private final GridOpSerDe gridOpSerDe = new GridOpSerDe();
+    private final Subject<byte[]> sender = PublishSubject.<byte[]>create().toSerialized();
+    private final Subject<byte[]> receiver = PublishSubject.<byte[]>create().toSerialized();
+
 
     private final Codec<Message, byte[]> messageCodec;
     private final Disposer disposer;
     private final StorageGridConfig config;
-    private final RxCollector<byte[]> sender;
-    private final RxEmitter<byte[]> receiver;
+//    private final RxCollector<byte[]> sender;
+//    private final RxEmitter<byte[]> receiver;
+
     private final RxRaft raft;
     private final Discovery discovery;
-    private final RaftTransport raftTransport;
     private final String context;
+    private final StorageGridTransport transport;
 
     StorageGrid(
             StorageGridConfig config,
-            RxEmitter<byte[]> receiver,
-            RxCollector<byte[]> sender,
             RxRaft rxRaft,
             Discovery discovery,
             Codec<Message, byte[]> messageCodec,
             String context
             ) {
         this.config = config;
-        this.receiver = receiver;
-        this.sender = sender;
         this.raft = rxRaft;
         this.discovery = discovery;
         this.messageCodec = messageCodec;
-        this.raftTransport = this.raft.transport();
         this.context = context;
+        this.transport = new StorageGridTransport() {
+            @Override
+            public Observer<byte[]> getReceiver() {
+                return receiver;
+            }
 
+            @Override
+            public Observable<byte[]> getSender() {
+                return sender;
+            }
+        };
 
         this.disposer = Disposer.builder()
                 .addDisposable(this.raft)
                 .addDisposable(this.discovery)
-                .addDisposable(this.sender::isTerminated, this.sender::onComplete)
-                .addDisposable(this.receiver::isTerminated, this.receiver::onComplete)
+                .addSubject(this.sender)
+                .addSubject(this.receiver)
                 .addDisposable(this.receiver.subscribe(bytes -> {
                     Message message;
                     try {
@@ -86,19 +96,19 @@ public class StorageGrid implements Disposable {
                     }
 
                 }))
-                .addDisposable(this.raftTransport.sender().appendEntriesRequest().subscribe(raftAppendEntriesRequest -> {
+                .addDisposable(this.raft.transport().sender().appendEntriesRequest().subscribe(raftAppendEntriesRequest -> {
                     var message = this.gridOpSerDe.serializeRaftAppendRequest(raftAppendEntriesRequest);
                     this.send(message);
                 }))
-                .addDisposable(this.raftTransport.sender().appendEntriesResponse().subscribe(raftAppendEntriesResponse -> {
+                .addDisposable(this.raft.transport().sender().appendEntriesResponse().subscribe(raftAppendEntriesResponse -> {
                     var message = this.gridOpSerDe.serializeRaftAppendResponse(raftAppendEntriesResponse);
                     this.send(message);
                 }))
-                .addDisposable(this.raftTransport.sender().voteRequests().subscribe(raftVoteRequest -> {
+                .addDisposable(this.raft.transport().sender().voteRequests().subscribe(raftVoteRequest -> {
                     var message = this.gridOpSerDe.serializeRaftVoteRequest(raftVoteRequest);
                     this.send(message);
                 }))
-                .addDisposable(this.raftTransport.sender().voteResponse().subscribe(raftVoteResponse -> {
+                .addDisposable(this.raft.transport().sender().voteResponse().subscribe(raftVoteResponse -> {
                     var message = this.gridOpSerDe.serializeRaftVoteResponse(raftVoteResponse);
                     this.send(message);
                 }))
@@ -112,18 +122,31 @@ public class StorageGrid implements Disposable {
                     this.raft.removePeerId(remoteEndpointId);
                     if (this.discovery.getRemoteEndpointIds().size() == 0) {
                         this.raft.stop();
+                        // if all endpoint is gone, we want to clear the inactive ones, otherwise we cannot form a
+                        // cluster when anyone comes back and its not new, so reset everything and then
+                        // listen and wait for the wonder
+                        this.discovery.reset();
+                        this.discovery.listen();
                     }
+                }))
+                .addDisposable(this.raft.stackedState().subscribe(stackedEpoch -> {
+                    // raft has not been able to elect a new leader, so we need to reset the discovery process
+                    this.discovery.reset();
                 }))
                 .addDisposable(this.discovery.endpointStatesNotifications().subscribe(notification -> {
                     var message = this.gridOpSerDe.serializeEndpointStatesNotification(notification);
                     this.send(message);
                 }))
                 .addDisposable(this.discovery.helloNotifications().subscribe(notification -> {
+                    var leaderId = this.getLeaderId();
+                    if (leaderId != null) {
+                        notification = new HelloNotification(notification.sourcePeerId(), leaderId);
+                    }
                     var message = this.gridOpSerDe.serializeHelloNotification(notification);
                     this.send(message);
                 }))
                 .addDisposable(this.raft.changedLeaderId().subscribe(newLeaderId -> {
-                    logger.debug("New leaderId: {}", newLeaderId.get());
+                    logger.info("New leaderId: {}", newLeaderId.get());
                     if (newLeaderId.isEmpty()) {
                         this.discovery.listen();
                     } else if (UuidTools.notEquals(newLeaderId.get(), this.config.localEndpointId())) {
@@ -198,38 +221,17 @@ public class StorageGrid implements Disposable {
                     });
                 }))
                 .onCompleted(() -> {
-                    logger.info("Disposed");
+                    logger.info("{} ({}) is disposed", this.getLocalEndpointId(), this.getContext());
                 })
                 .build();
-    }
-
-    public void join() {
-        if (!this.joined.compareAndSet(false, true)) {
-            logger.warn("Attempted to open StorageGrid (endpointId: {}, context: {}) twice", this.getLocalEndpointId(), this.context);
-            return;
-        }
-        var leaderId = this.getLeaderId();
-        if (leaderId != null && leaderId == this.getLocalEndpointId()) {
-            this.discovery.propagate();
-        } else {
-            this.discovery.listen();
-        }
-        logger.info("Started (endpointId: {}, context: {}). Discovery: {}, Raft: {}", this.getLocalEndpointId(), this.context, this.discovery, this.raft);
-    }
-
-    public void detach() {
-        if (!this.joined.compareAndSet(true, false)) {
-            logger.warn("Attempted to close StorageGrid (endpointId: {}, context: {}) twice", this.getLocalEndpointId(), this.context);
-            return;
-        }
-        this.discovery.inactivate();
-        logger.info("Stopped (endpointId: {}, context: {})", this.getLocalEndpointId(), this.context);
+        logger.info("{} ({}) is created", this.getLocalEndpointId(), this.getContext());
+        this.discovery.listen();
     }
 
     private void dispatch(Message message) {
         var type = MessageType.valueOfOrNull(message.type);
         if (type == null) {
-            logger.warn("{} Unrecognized message received {}", this.context, JsonUtils.objectToString(message));
+            logger.warn("{} ({}) received an unrecognized message {}", this.getLocalEndpointId(), this.context, JsonUtils.objectToString(message));
             return;
         }
         switch(type) {
@@ -243,19 +245,19 @@ public class StorageGrid implements Disposable {
             }
             case RAFT_APPEND_ENTRIES_REQUEST -> {
                 var appendEntriesRequest = this.gridOpSerDe.deserializeRaftAppendRequest(message);
-                this.raftTransport.receiver().appendEntriesRequest().onNext(appendEntriesRequest);
+                this.raft.transport().receiver().appendEntriesRequest().onNext(appendEntriesRequest);
             }
             case RAFT_APPEND_ENTRIES_RESPONSE -> {
                 var appendEntriesResponse = this.gridOpSerDe.deserializeRaftAppendResponse(message);
-                this.raftTransport.receiver().appendEntriesResponse().onNext(appendEntriesResponse);
+                this.raft.transport().receiver().appendEntriesResponse().onNext(appendEntriesResponse);
             }
             case RAFT_VOTE_REQUEST -> {
                 var voteRequest = this.gridOpSerDe.deserializeRaftVoteRequest(message);
-                this.raftTransport.receiver().voteRequests().onNext(voteRequest);
+                this.raft.transport().receiver().voteRequests().onNext(voteRequest);
             }
             case RAFT_VOTE_RESPONSE -> {
                 var voteResponse = this.gridOpSerDe.deserializeRaftVoteResponse(message);
-                this.raftTransport.receiver().voteResponse().onNext(voteResponse);
+                this.raft.transport().receiver().voteResponse().onNext(voteResponse);
             }
             case STORAGE_SYNC_REQUEST -> {
                 var request = this.gridOpSerDe.deserializeStorageSyncRequest(message);
@@ -287,7 +289,7 @@ public class StorageGrid implements Disposable {
                         try {
                             storageEndpointNotification = this.messageCodec.encode(updateNotificationMessage);
                         } catch (Throwable e) {
-                            logger.warn("{} Error while serializing message", this.context, e);
+                            logger.warn("{} ({}) Error while serializing message", this.getLocalEndpointId(), this.context, e);
                             continue;
                         }
                         storageUpdateNotifications.put(storage.getId(), storageEndpointNotification);
@@ -505,6 +507,10 @@ public class StorageGrid implements Disposable {
 
     Observable<Optional<UUID>> changedLeaderId() {
         return this.raft.changedLeaderId();
+    }
+
+    String getContext() {
+        return this.context;
     }
 
     UUID getLeaderId() {

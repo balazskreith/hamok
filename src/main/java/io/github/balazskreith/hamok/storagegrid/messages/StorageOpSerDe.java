@@ -116,6 +116,20 @@ public class StorageOpSerDe<K, V> {
         );
     }
 
+    public Message serializeDeleteEntriesNotification(DeleteEntriesNotification<K> notification) {
+        var result = new Message();
+        result.type = MessageType.DELETE_ENTRIES_NOTIFICATION.name();
+        result.keys = this.serializeKeys(notification.keys());
+        result.sourceId = notification.sourceEndpointId();
+        result.destinationId = notification.destinationEndpointId();
+        return result;
+    }
+
+    public DeleteEntriesNotification<K> deserializeDeleteEntriesNotification(Message message) {
+        var keys = this.deserializeKeys(message.keys);
+        var result = new DeleteEntriesNotification<K>(message.sourceId, keys, message.destinationId);
+        return result;
+    }
 
     public Message serializeDeleteEntriesRequest(DeleteEntriesRequest<K> request) {
         var result = new Message();

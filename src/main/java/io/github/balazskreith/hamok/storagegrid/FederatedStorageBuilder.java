@@ -29,6 +29,9 @@ public class FederatedStorageBuilder<K, V> {
     private Supplier<Codec<V, String>> valueCodecSupplier;
     private Supplier<BinaryOperator<V>> mergeOpProvider;
     private Storage<K, V> actualStorage;
+    private String storageId = null;
+    private int maxCollectedActualStorageEvents = 100;
+    private int maxCollectedActualStorageTimeInMs = 100;
 
     FederatedStorageBuilder() {
 
@@ -60,8 +63,19 @@ public class FederatedStorageBuilder<K, V> {
 
 
     public FederatedStorageBuilder<K, V> setStorageId(String value) {
+        this.storageId = value;
         this.backupEndpointBuilder.setStorageId(value);
         this.storageEndpointBuilder.setStorageId(value);
+        return this;
+    }
+
+    public FederatedStorageBuilder<K, V> setMaxCollectedStorageEvents(int value) {
+        this.maxCollectedActualStorageEvents = value;
+        return this;
+    }
+
+    public FederatedStorageBuilder<K, V> setMaxCollectedStorageTimeInMs(int value) {
+        this.maxCollectedActualStorageTimeInMs = value;
         return this;
     }
 
@@ -85,6 +99,12 @@ public class FederatedStorageBuilder<K, V> {
         Objects.requireNonNull(this.valueCodecSupplier, "Codec for values must be defined");
         Objects.requireNonNull(this.keyCodecSupplier, "Codec for keys must be defined");
         Objects.requireNonNull(this.mergeOpProvider, "Cannot build without merge operator");
+        Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
+        var config = new FederatedStorageConfig(
+                this.storageId,
+                this.maxCollectedActualStorageEvents,
+                this.maxCollectedActualStorageTimeInMs
+        );
 
         var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
         var storageEndpoint = this.storageEndpointBuilder
@@ -109,7 +129,7 @@ public class FederatedStorageBuilder<K, V> {
                 .withEndpoint(backupEndpoint)
                 .build();
 
-        var result = new FederatedStorage<K, V>(this.actualStorage, storageEndpoint, backups, mergeOpProvider.get());
+        var result = new FederatedStorage<K, V>(this.actualStorage, storageEndpoint, backups, mergeOpProvider.get(), config);
         this.storageBuiltListener.accept(result);
         return result;
 

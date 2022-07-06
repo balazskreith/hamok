@@ -6,8 +6,6 @@ import io.github.balazskreith.hamok.mappings.Mapper;
 import io.github.balazskreith.hamok.raft.LogEntry;
 import io.github.balazskreith.hamok.raft.RaftConfig;
 import io.github.balazskreith.hamok.raft.RxRaft;
-import io.github.balazskreith.hamok.rxutils.RxCollector;
-import io.github.balazskreith.hamok.rxutils.RxEmitter;
 import io.github.balazskreith.hamok.storagegrid.discovery.Discovery;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.core.Scheduler;
@@ -25,11 +23,6 @@ public class StorageGridBuilder {
     private int endpointStateNotificationPeriodInMs = 1500;
     private int requestTimeoutInMs = 5000;
 
-    private int collectOutboundMessageMaxTimeInMs = 50;
-    private int collectOutboundMessageMaxItems = 1000;
-    private int collectInboundMessageMaxTimeInMs = 50;
-    private int collectInboundMessageMaxItems = 1000;
-
     private int raftElectionTimeoutInMs = 500;
     private int raftElectionMaxRandomOffsetInMs = 1000;
     private int raftHeartbeatInMs = 300;
@@ -39,11 +32,15 @@ public class StorageGridBuilder {
     private Scheduler raftScheduler = null;
     private Executor raftExecutor = null;
     private Codec<Message, byte[]> messageCodec;
-    private boolean autoJoin = true;
     private String context;
 
     public StorageGridBuilder withContext(String value) {
         this.context = value;
+        return this;
+    }
+
+    public StorageGridBuilder withRaftMaxLogRetentionTimeInMs(int value) {
+        this.raftLogsExpirationTimeoutInMs = value;
         return this;
     }
 
@@ -56,21 +53,8 @@ public class StorageGridBuilder {
         );
     }
 
-    public StorageGridBuilder withAutoJoin(boolean value) {
-        this.autoJoin = value;
-        return this;
-    }
-
     public StorageGrid build() {
         Objects.requireNonNull(this.messageCodec, "Codec for message must be given");
-        var sender = RxCollector.<byte[]>builder()
-                .withMaxItems(this.collectOutboundMessageMaxItems)
-                .withMaxTimeInMs(this.collectOutboundMessageMaxTimeInMs)
-                .build();
-        var receiver = RxEmitter.<byte[]>builder()
-                .withMaxItems(this.collectInboundMessageMaxItems)
-                .withMaxTimeInMs(this.collectInboundMessageMaxTimeInMs)
-                .build();
         var raftConfig = this.createRaftConfig();
         var raft = RxRaft.builder()
                 .withConfig(raftConfig)
@@ -88,16 +72,11 @@ public class StorageGridBuilder {
         var config = this.createStorageGridConfig();
         var result = new StorageGrid(
                 config,
-                receiver,
-                sender,
                 raft,
                 discovery,
                 this.messageCodec,
                 this.context
         );
-        if (this.autoJoin) {
-            result.join();
-        }
         return result;
     }
 

@@ -44,7 +44,7 @@ public class StorageGrid implements Disposable {
 //    private final RxCollector<byte[]> sender;
 //    private final RxEmitter<byte[]> receiver;
 
-//    private final RxRaft raft;
+    //    private final RxRaft raft;
 //    private final Discovery discovery;
     private final Raccoon raccoon;
     private final String context;
@@ -55,7 +55,7 @@ public class StorageGrid implements Disposable {
             Raccoon raccoon,
             Codec<Message, byte[]> messageCodec,
             String context
-            ) {
+    ) {
         this.config = config;
         this.raccoon = raccoon;
         this.messageCodec = messageCodec;
@@ -80,11 +80,11 @@ public class StorageGrid implements Disposable {
                     Message message;
                     try {
                         message = this.messageCodec.decode(bytes);
-                    } catch(Exception ex) {
+                    } catch (Exception ex) {
                         logger.warn("{} Cannot decode message", this.context, ex);
                         return;
                     }
-                    logger.debug("{} received message (type: {}) from {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.sourceId.toString().substring(0, 8));
+                    logger.info("{} received message (type: {}) from {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.sourceId.toString().substring(0, 8));
                     if (message.destinationId == null || UuidTools.equals(message.destinationId, this.getLocalEndpointId())) {
                         this.dispatch(message);
                     } else {
@@ -208,7 +208,8 @@ public class StorageGrid implements Disposable {
             logger.warn("{} ({}) received an unrecognized message {}", this.getLocalEndpointId(), this.context, JsonUtils.objectToString(message));
             return;
         }
-        switch(type) {
+        logger.debug("{} ({}) received message {}", this.getLocalEndpointId(), this.context, JsonUtils.objectToString(message));
+        switch (type) {
             case HELLO_NOTIFICATION -> {
                 var notification = this.gridOpSerDe.deserializeHelloNotification(message);
                 this.raccoon.inboundEvents().helloNotifications().onNext(notification);
@@ -334,7 +335,7 @@ public class StorageGrid implements Disposable {
         }
     }
 
-    public<K, V> SeparatedStorageBuilder<K, V> separatedStorage() {
+    public <K, V> SeparatedStorageBuilder<K, V> separatedStorage() {
         var storageGrid = this;
         return new SeparatedStorageBuilder<K, V>()
                 .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
@@ -344,7 +345,7 @@ public class StorageGrid implements Disposable {
                 })
                 .onStorageBuilt(storage -> {
                     var updatedBoundStorage = this.storages.getOrDefault(storage.getId(), CorrespondedStorage.createEmpty())
-                                    .setStorage(storage);
+                            .setStorage(storage);
                     this.storages.put(storage.getId(), updatedBoundStorage);
                     storage.events().closingStorage()
                             .firstElement().subscribe(this.storages::remove);
@@ -352,7 +353,7 @@ public class StorageGrid implements Disposable {
                 ;
     }
 
-    public<K, V> FederatedStorageBuilder<K, V> federatedStorage() {
+    public <K, V> FederatedStorageBuilder<K, V> federatedStorage() {
         var storageGrid = this;
         return new FederatedStorageBuilder<K, V>()
                 .setStorageGrid(storageGrid)
@@ -370,7 +371,7 @@ public class StorageGrid implements Disposable {
                 ;
     }
 
-    public<K, V> ReplicatedStorageBuilder<K, V> replicatedStorage() {
+    public <K, V> ReplicatedStorageBuilder<K, V> replicatedStorage() {
         var storageGrid = this;
         return new ReplicatedStorageBuilder<K, V>()
                 .setStorageGrid(storageGrid)
@@ -408,7 +409,7 @@ public class StorageGrid implements Disposable {
     }
 
     void send(Message message) {
-//        logger.info("{} sending message (type: {}) to {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.destinationId);
+        logger.info("{} sending message (type: {}) to {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.destinationId);
         byte[] bytes;
         try {
             message.sourceId = this.raccoon.getId();
@@ -428,7 +429,7 @@ public class StorageGrid implements Disposable {
             try {
                 var maybeNewLeaderId = waitForLeader.get(3000, TimeUnit.MILLISECONDS);
                 leaderId = maybeNewLeaderId.orElse(null);
-            } catch(Exception e) {
+            } catch (Exception e) {
                 logger.warn("{} Exception occurred while waiting for leaders", this.context, e);
             }
 
@@ -448,7 +449,7 @@ public class StorageGrid implements Disposable {
         if (leaderId == this.raccoon.getId()) {
             // we can submit here.
             if (this.raccoon.submit(entry) == null) {
-                logger.warn("{} Lead submit returned with null. retry", this.context);
+                logger.warn("{} submitting message to the leader returned with null.", this.context);
                 this.submit(message);
                 return;
             }

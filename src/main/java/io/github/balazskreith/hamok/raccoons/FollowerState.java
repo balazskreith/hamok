@@ -168,8 +168,9 @@ class FollowerState extends AbstractState {
 
     @Override
     void receiveHelloNotification(HelloNotification notification) {
+        // if no leader has been elected we add the endpoint
         // only join remote peers if no remote peer is available, and obviously no leader has been elected
-        if (this.remotePeers().size() < 1) {
+        if (this.config().autoDiscovery() && this.getLeaderId() == null) {
             this.remotePeers().join(notification.sourcePeerId());
         }
         logger.info("{} received hello notification {}", this.getLocalPeerId(), notification);
@@ -179,13 +180,6 @@ class FollowerState extends AbstractState {
     void receiveEndpointNotification(EndpointStatesNotification notification) {
         // update the server endpoint states
         var remotePeers = this.remotePeers();
-        remotePeers.touch(notification.sourceEndpointId());
-        if (notification.activeEndpointIds() != null) {
-            notification.activeEndpointIds()
-                    .stream()
-                    .filter(peerId -> UuidTools.notEquals(peerId, this.getLocalPeerId()))
-                    .forEach(remotePeers::touch);
-        }
         if (notification.inactiveEndpointIds() != null) {
             boolean resetRequest = false;
             for (var it = notification.inactiveEndpointIds().iterator(); it.hasNext(); ) {
@@ -201,8 +195,16 @@ class FollowerState extends AbstractState {
                 remotePeers.detach(inactivePeerId);
             }
             if (resetRequest) {
+                logger.warn("Reset!");
                 this.inactivatedLocalPeerId();
             }
+        }
+        remotePeers.touch(notification.sourceEndpointId());
+        if (notification.activeEndpointIds() != null) {
+            notification.activeEndpointIds()
+                    .stream()
+                    .filter(peerId -> UuidTools.notEquals(peerId, this.getLocalPeerId()))
+                    .forEach(remotePeers::touch);
         }
         this.updated.set(Instant.now().toEpochMilli());
     }

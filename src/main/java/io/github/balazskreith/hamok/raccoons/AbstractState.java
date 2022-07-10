@@ -98,6 +98,10 @@ abstract class AbstractState implements Runnable {
         this.base.setActualLeaderId(leaderId);
     }
 
+    protected UUID getLeaderId() {
+        return this.base.getLeaderId();
+    }
+
     protected void requestCommitIndexSync(UUID leaderId) {
         this.base.requestCommitIndexSync();
     }
@@ -112,7 +116,7 @@ abstract class AbstractState implements Runnable {
             return;
         }
         var remotePeers = this.remotePeers();
-        var activePeerIds = SetUtils.addAll(remotePeers.getActiveRemotePeerIds(), Set.of(this.getLocalPeerId()));
+        var activePeerIds = SetUtils.combineAll(remotePeers.getActiveRemotePeerIds(), Set.of(this.getLocalPeerId()));
         var inactiveRemotePeerIds = remotePeers.getInActiveRemotePeerIds();
         for (var remotePeerId : remotePeerIds) {
             var notification = new EndpointStatesNotification(
@@ -122,6 +126,7 @@ abstract class AbstractState implements Runnable {
                     remotePeerId
             );
             this.base.outboundEvents.endpointStateNotifications().onNext(notification);
+
         }
 
     }

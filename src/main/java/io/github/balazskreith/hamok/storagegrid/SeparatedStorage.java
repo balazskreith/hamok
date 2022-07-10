@@ -211,7 +211,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
         if (updatedRemoteEntries != null && 0 < updatedRemoteEntries.size()) {
             updatedRemoteEntries.keySet().stream().forEach(missingKeys::remove);
         }
-        var result = MapUtils.putAll(updatedLocalEntries, updatedRemoteEntries);
+        var result = MapUtils.combineAll(updatedLocalEntries, updatedRemoteEntries);
         if (missingKeys.size() < 1) {
             return result;
         }
@@ -237,7 +237,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
         if (0 < existingRemoteEntries.size()) {
             existingRemoteEntries.keySet().stream().forEach(missingKeys::remove);
         }
-        var result = MapUtils.putAll(existingLocalEntries, existingRemoteEntries);
+        var result = MapUtils.combineAll(existingLocalEntries, existingRemoteEntries);
         if (missingKeys.size() < 1) {
             return result;
         }
@@ -245,7 +245,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
                 Function.identity(),
                 key -> entries.get(key)
         ));
-        return MapUtils.putAll(result, this.storage.insertAll(newEntries));
+        return MapUtils.combineAll(result, this.storage.insertAll(newEntries));
     }
 
     @Override
@@ -275,7 +275,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
                     .collect(Collectors.toSet());
         }
         var remoteDeletedKeys = this.endpoint.requestDeleteEntries(remainingKeys);
-        return SetUtils.addAll(localDeletedKeys, remoteDeletedKeys);
+        return SetUtils.combineAll(localDeletedKeys, remoteDeletedKeys);
     }
 
     @Override

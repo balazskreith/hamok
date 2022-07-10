@@ -255,11 +255,15 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .build();
         var message = this.messageSerDe.serializeGetEntriesRequest(request);
         var depot = depotProvider.get();
-        this.request(message).stream()
+        var responses = this.request(message);
+        responses.stream()
                 .map(this.messageSerDe::deserializeGetEntriesResponse)
                 .map(GetEntriesResponse::foundEntries)
                 .forEach(depot::accept);
-        return depot.get();
+        var result = depot.get();
+        logger.debug("{} collected responses: {}, depot: {}", this.getLocalEndpointId(), JsonUtils.objectToString(responses), JsonUtils.objectToString(depot.get()));
+        return result;
+//        return depot.get();
     }
 
     public void sendGetEntriesResponse(GetEntriesResponse<K, V> response) {
@@ -384,10 +388,10 @@ public class StorageEndpoint<K, V> implements Disposable {
         logger.debug("{} Receiving message for request id {} for type: {}", this.grid.getLocalEndpointId(), message.requestId, message.type);
         var pendingRequest = this.pendingRequests.get(message.requestId);
         if (pendingRequest == null) {
-            logger.warn("{} No pending request found for message {}", this.grid.getLocalEndpointId().toString().substring(0, 8) ,JsonUtils.objectToString(message));
+            logger.warn("{} No pending request found for message {}", this.grid.getLocalEndpointId() ,JsonUtils.objectToString(message));
             return;
         }
-        logger.debug("{} Receiving response for request id {} for type: {}",this.grid.getLocalEndpointId().toString().substring(0, 8), message.requestId, message.type);
+        logger.debug("{} Receiving response for request id {} for type: {}, {}",this.grid.getLocalEndpointId(), message.requestId, message.type, pendingRequest);
         pendingRequest.accept(message);
     }
 

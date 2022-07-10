@@ -2,7 +2,7 @@ plugins {
     id 'java'
 }
 
-group 'com.balazskreith.vstorage'
+group 'io.github.balazskreith.hamok'
 version '1.0.0-beta'
 
 repositories {
@@ -16,16 +16,10 @@ java {
 
 
 dependencies {
-//    runtimeOnly("ch.qos.logback:logback-classic")
-
     implementation "io.reactivex.rxjava3:rxjava:3.1.5"
-//    implementation group: 'org.slf4j', name: 'slf4j-api', version: '1.7.25'
     implementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.13.3'
 
     implementation 'org.slf4j:slf4j-api:1.7.30'
-//    implementation 'org.apache.logging.log4j:log4j-slf4j-impl'
-
-//    implementation 'org.slf4j:slf4j-simple:1.7.30'
 
     testImplementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.11'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'

@@ -10,13 +10,11 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.function.Predicate;
 
 class StorageGridRouter {
     private static final Logger logger = LoggerFactory.getLogger(StorageGridRouter.class);
 
     private final Map<UUID, Transport> transports = new HashMap<>();
-    private final Map<UUID, Predicate<Message>> ACLs = new HashMap<>();
     private final RwLock rwLock = new RwLock();
     private final Codec<Message, byte[]> codec;
     private volatile boolean enabled = true;
@@ -78,14 +76,6 @@ class StorageGridRouter {
         });
     }
 
-    public UUID addACL(Predicate<Message> acl) {
-        UUID id = UUID.randomUUID();
-        this.rwLock.runInWriteLock(() -> {
-            this.ACLs.put(id, acl);
-        });
-        return id;
-    }
-
     private void receive(byte[] bytes) {
         if (!this.enabled) {
             return;
@@ -105,11 +95,6 @@ class StorageGridRouter {
                 logger.info("Blocked message from {} type: {}, protocol: {} to {}, because the source is disabled", source.endpointId, message.type, message.protocol, message.destinationId);
                 return;
             }
-            var denied = this.ACLs.values().stream().anyMatch(f -> f.test(message) == false);
-            if (denied) {
-                logger.info("Message is blocked due to ACL");
-                return;
-            }
             for (var it = this.transports.values().iterator(); it.hasNext(); ) {
                 var transport = it.next();
                 if (UuidTools.equals(message.sourceId, transport.endpointId)) {
@@ -124,12 +109,6 @@ class StorageGridRouter {
                     logger.info("Message is routed from {} to {} type: {}, protocol {}", source.endpointId, transport.endpointId, message.type, message.protocol);
                 }
             }
-        });
-    }
-
-    public void removeACL(UUID acl) {
-        this.rwLock.runInWriteLock(() -> {
-            this.ACLs.remove(acl);
         });
     }
 

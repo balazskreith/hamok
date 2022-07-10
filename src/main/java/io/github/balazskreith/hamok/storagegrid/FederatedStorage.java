@@ -53,7 +53,6 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
             .onGetEntriesRequest(getEntriesRequest -> {
                 var entries = this.storage.getAll(getEntriesRequest.keys());
                 var response = getEntriesRequest.createResponse(entries);
-                logger.info("{} get response: {}", this.endpoint.getLocalEndpointId(), response);
                 this.endpoint.sendGetEntriesResponse(response);
             }).onDeleteEntriesRequest(request -> {
                 var deletedKeys = this.storage.deleteAll(request.keys());
@@ -105,12 +104,7 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 );
                 this.endpoint.sendGetKeysResponse(response);
             }).onRemoteEndpointJoined(remoteEndpointId -> {
-//                if (this.endpoint.getRemoteEndpointIds().size() == 1) {
-//                    // this is the first time any endpoint joined
-//                    var localKeys = this.storage.keys();
-//                    var entries = this.storage.getAll(localKeys);
-//                    this.backupStorage.save(entries);
-//                }
+
             }).onRemoteEndpointDetached(remoteEndpointId -> {
                 var savedEntries = this.backupStorage.extract(remoteEndpointId);
                 if (savedEntries.isEmpty()) {
@@ -131,13 +125,13 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 this.storage.setAll(updatedEntries);
             }).onLocalEndpointReset(payload -> {
                 // at this point we know that this endpoint became inactive, and it is reinstated now.
-                // we need to request all keys from all remote endpoints, and evict them from here, because remote endpoints
-                // fetched our previous keys from their backup. if this endpoint has some key intersected with remote and changed locally after,
-                // the changes will be lost.
-                // all new keys created in this endpoint after it was detached will remain in the possession of the storage and
-                // accessible for other storages.
-                var remoteKeys = this.endpoint.requestGetKeys();
-                this.storage.evictAll(remoteKeys);
+                // we need to evict all items from the storage and all stored items from the backup
+                var keys = this.storage.keys();
+                this.storage.evictAll(keys);
+                var backupMetrics = this.backupStorage.metrics();
+                this.backupStorage.clear();
+                logger.info("{} Reset Storage {}. Evicted storage entries: {}, Deleted backup entries: {}",
+                        this.endpoint.getLocalEndpointId(), this.storage.getId(), keys.size(), backupMetrics.storedEntries());
             });
 
         var collectedEvents = this.storage.events()
@@ -177,10 +171,8 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                     this.backupStorage.delete(keys);
                 }))
                 .addDisposable(collectedEvents.evictedEntries().subscribe(modifiedStorageEntries -> {
-                    var keys = modifiedStorageEntries.stream()
-                            .map(entry -> entry.getKey())
-                            .collect(Collectors.toSet());
-                    this.backupStorage.delete(keys);
+                    // evicted items from the local storage is a special case in distributed storages
+                    // evict only dispose locally stored items without sending any notification or request.
                 }))
                 .build();
     }
@@ -289,7 +281,7 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
     @Override
     public Set<K> keys() {
         Set<K> remoteKeys = this.endpoint.requestGetKeys();
-        return SetUtils.addAll(remoteKeys, this.storage.keys());
+        return SetUtils.combineAll(remoteKeys, this.storage.keys());
     }
 
     @Override
@@ -322,11 +314,6 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
     @Override
     public Set<K> localKeys() {
         return this.storage.keys();
-    }
-
-    @Override
-    public void localClear() {
-        this.storage.clear();
     }
 
     @Override

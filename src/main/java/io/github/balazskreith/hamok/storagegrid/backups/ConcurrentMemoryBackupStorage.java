@@ -42,10 +42,8 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
                 this.storedEntries.put(remoteEndpointId, remoteEndpointStoredEntries);
             }
             remoteEndpointStoredEntries.putAll(notification.entries());
-            logger.info("{} received update notification for backups. {}. StoredEntries: {}", endpoint.getLocalEndpointId(), JsonUtils.objectToString(storedEntries), JsonUtils.objectToString(this.storedEntries));
         }).onDeleteEntriesNotification(notification -> {
             this.evict(notification.keys());
-            logger.debug("{} received delete notification for backups. {}. Stored entries: {}", endpoint.getLocalEndpointId(), notification.keys(), JsonUtils.objectToString(this.storedEntries));
         }).onRemoteEndpointJoined(remoteEndpointId -> {
             var oldList = this.remoteEndpointIdsListHolder.get();
             var newList = Stream.concat(oldList.stream(), List.of(remoteEndpointId).stream())
@@ -181,12 +179,21 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         this.storedEntries.clear();
     }
 
+    @Override
+    public BackupMetrics metrics() {
+        return  new BackupMetrics(
+                this.endpoint.getStorageId(),
+                this.storedEntries.size(),
+                this.savedEntries.size()
+        );
+    }
+
     private void saveEntries(UUID remoteEndpointId, Map<K, V> entries) {
         var notification = UpdateEntriesNotification.<K, V>builder()
                 .setEntries(entries)
                 .setDestinationEndpointId(remoteEndpointId)
                 .build();
-        logger.info("{} Save entries {} on endpoint {}", this.endpoint.getLocalEndpointId(), JsonUtils.objectToString(entries), remoteEndpointId);
+//        logger.info("{} Save entries {} on endpoint {}", this.endpoint.getLocalEndpointId(), JsonUtils.objectToString(entries), remoteEndpointId);
         this.endpoint.sendUpdateEntriesNotification(notification);
         var toSave = entries.keySet().stream().map(key -> new SavedEntry<K>(key, remoteEndpointId)).collect(Collectors.toMap(
                 savedEntry -> savedEntry.key(),

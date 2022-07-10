@@ -117,7 +117,7 @@ class LeaderState extends AbstractState {
 
     @Override
     void receiveEndpointNotification(EndpointStatesNotification notification) {
-        logger.warn("Only a leader should make an endpoint state notification");
+        logger.warn("{} is a leader and received endpoint state notification from {}. ", notification.destinationEndpointId(), notification.sourceEndpointId());
     }
 
     @Override

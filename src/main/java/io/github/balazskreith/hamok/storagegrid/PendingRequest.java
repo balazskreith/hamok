@@ -45,14 +45,14 @@ public class PendingRequest implements Consumer<Message> {
             synchronized (this) {
                 var pendingBefore = this.pendingEndpointIds.size();
                 if (!this.pendingEndpointIds.remove(message.sourceId)) {
-                    logger.info("Source endpoint {} is not found in pending ids", message.sourceId);
+                    logger.warn("Source endpoint {} is not found in pending ids of request {}", message.sourceId, message.requestId);
                     completed = pendingBefore == 0;
                 }
                 var pendingAfter = this.pendingEndpointIds.size();
                 this.responses.add(message);
                 ++this.receivedResponse;
 //                logger.warn("{} pending before {}, pending after: {}", this.id.toString().substring(0, 8), pendingBefore, pendingAfter);
-                completed = (pendingBefore == 1 && pendingAfter == 0) || (0 < this.neededResponses && this.neededResponses <= this.receivedResponse);
+                completed = (pendingBefore == 1 && pendingAfter == 0) || (0 < this.neededResponses && this.receivedResponse <= this.neededResponses);
             }
         } finally {
             if (completed) {
@@ -92,7 +92,8 @@ public class PendingRequest implements Consumer<Message> {
     public List<Message> get()  throws ExecutionException, InterruptedException, TimeoutException  {
         synchronized (this) {
             if (this.pendingEndpointIds.size() < 1 && this.neededResponses < 0) {
-                return Collections.emptyList();
+                // if the application receive the response faster than reaching the get() point, then we are already done
+                return Collections.unmodifiableList(this.responses);
             }
         }
         try {
@@ -107,7 +108,8 @@ public class PendingRequest implements Consumer<Message> {
         }
 
         synchronized (this) {
-            return List.copyOf(this.responses);
+            logger.warn("Pending request is resolved by responses {}", JsonUtils.objectToString(this.responses));
+            return Collections.unmodifiableList(this.responses);
         }
     }
 

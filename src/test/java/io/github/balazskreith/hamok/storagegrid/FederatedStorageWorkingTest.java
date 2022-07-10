@@ -1,12 +1,15 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
+import io.github.balazskreith.hamok.ModifiedStorageEntry;
+import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.mappings.Codec;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.function.BinaryOperator;
@@ -14,9 +17,9 @@ import java.util.function.BinaryOperator;
 @DisplayName("Federation Storage Stress Test Scenario. While federated storages are distributed through the grid, endpoint can be joined and detached, but the storage remains consequent.")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class FederatedStorageStressTest {
+class FederatedStorageWorkingTest {
 
-    private static final Logger logger = LoggerFactory.getLogger(FederatedStorageStressTest.class);
+    private static final Logger logger = LoggerFactory.getLogger(FederatedStorageWorkingTest.class);
 
     private static final int BCN_GOLD_STOCKPILE = 2;
     private static final int NY_GOLD_STOCKPILE = 3;
@@ -30,12 +33,12 @@ class FederatedStorageStressTest {
     private FederatedStorage<String, Integer> bcnStockpile;
     private FederatedStorage<String, Integer> nyStockpile;
     private FederatedStorage<String, Integer> hkStockpile;
-    private StorageGridRouter router = new StorageGridRouter(Codec.create(JsonUtils::objectToBytes, bytes -> JsonUtils.bytesToObject(bytes, Message.class)));
+    private StorageGridRouter router = new StorageGridRouter();
 
     @Test
     @Order(1)
-    @DisplayName("When bcnStockpile connected to usEast, and nyStockpile connected to usEast are created Then they are empty")
-    void shouldBeEmpty() {
+    @DisplayName("When euWest, and usEast are up and bcnStockpile, nyStockpile are created Then they are empty")
+    void test_1() {
         this.euWest = StorageGrid.builder()
                 .withContext("Eu West")
                 .withRaftMaxLogRetentionTimeInMs(30000)
@@ -67,8 +70,6 @@ class FederatedStorageStressTest {
                 .setValueCodecSupplier(() -> valueCodec)
                 .build();
 
-
-
         Assertions.assertTrue(bcnStockpile.isEmpty());
         Assertions.assertTrue(nyStockpile.isEmpty());
         Assertions.assertEquals(0, bcnStockpile.size());
@@ -77,14 +78,13 @@ class FederatedStorageStressTest {
 
     @Test
     @Order(2)
-    @DisplayName("When euWest and usEast StorageGrid are connected to each other Then they notify the storages about the joined other endpoints")
-    void shouldConnectTwoGrid() throws ExecutionException, InterruptedException, TimeoutException {
+    @DisplayName("When euWest and usEast are connected Then they notify the storages about the joined other endpoints")
+    void test_2() throws ExecutionException, InterruptedException, TimeoutException {
         var euWestIsReady = new CompletableFuture<UUID>();
         var usEastIsReady = new CompletableFuture<UUID>();
 
         euWest.joinedRemoteEndpoints().subscribe(euWestIsReady::complete);
         usEast.joinedRemoteEndpoints().subscribe(usEastIsReady::complete);
-
 
         this.router.add(euWest.getLocalEndpointId(), euWest.transport());
         this.router.add(usEast.getLocalEndpointId(), usEast.transport());
@@ -95,7 +95,7 @@ class FederatedStorageStressTest {
     @Test
     @Order(3)
     @DisplayName("When bcnStockpile and nyStockpile have value for key gold, Then the value to retrieve the amount of gold on any federated storage is the merged value of all")
-    void shouldAddItemsToStockPiles() {
+    void test_3() {
         bcnStockpile.set(GOLD_STOCKPILE, BCN_GOLD_STOCKPILE);
         nyStockpile.set(GOLD_STOCKPILE, NY_GOLD_STOCKPILE);
 
@@ -118,8 +118,8 @@ class FederatedStorageStressTest {
 
     @Test
     @Order(4)
-    @DisplayName("When hkStockpile -> asEast got up, it joins to the grid")
-    void shouldConnectThirdGrid() throws ExecutionException, InterruptedException, TimeoutException {
+    @DisplayName("When asEast is up and hkStockpile is created Then asEast joins to the grid")
+    void test_4() throws ExecutionException, InterruptedException, TimeoutException {
         this.asEast = StorageGrid.builder()
                 .withContext("AS east")
                 .build();
@@ -160,7 +160,7 @@ class FederatedStorageStressTest {
     @Test
     @Order(5)
     @DisplayName("When hkStockpile is updated to store gold Then the total gold is the amount of gold all federated storage stores")
-    void shouldRetrieveValues() {
+    void test_5() {
         hkStockpile.set(GOLD_STOCKPILE, HK_GOLD_STOCKPILE);
 
         Assertions.assertEquals(BCN_GOLD_STOCKPILE + NY_GOLD_STOCKPILE + HK_GOLD_STOCKPILE, bcnStockpile.get(GOLD_STOCKPILE));
@@ -180,7 +180,7 @@ class FederatedStorageStressTest {
     @Test
     @Order(6)
     @DisplayName("When a key is removed in one bcnStockpile Then it is remove from all stockpiles")
-    void shouldRemoveItemsFromStockPiles() throws InterruptedException {
+    void test_6() throws InterruptedException {
         bcnStockpile.delete(GOLD_STOCKPILE);
 
         Assertions.assertEquals(NY_GOLD_STOCKPILE + HK_GOLD_STOCKPILE, bcnStockpile.get(GOLD_STOCKPILE));
@@ -211,17 +211,31 @@ class FederatedStorageStressTest {
     @Test
     @Order(7)
     @DisplayName("When usEast is detached from the grid Then euWest and asEast took over the backup and the total amount of gold does not change")
-    void shouldHaveBackup() throws ExecutionException, InterruptedException, TimeoutException {
+    void test_7() throws ExecutionException, InterruptedException, TimeoutException {
         var stopped_1 = new CompletableFuture<UUID>();
         var stopped_2 = new CompletableFuture<UUID>();
+        var leaderElected = new CompletableFuture<UUID>();
+        var detachedEndpoints = new CountDownLatch(2);
         euWest.detachedRemoteEndpoints().subscribe(stopped_1::complete);
         asEast.detachedRemoteEndpoints().subscribe(stopped_2::complete);
+        usEast.detachedRemoteEndpoints().subscribe((uuid) -> detachedEndpoints.countDown());
+
+        if (UuidTools.equals(usEast.getLocalEndpointId(), usEast.getLeaderId())) {
+            euWest.changedLeaderId().filter(Optional::isPresent).map(Optional::get).subscribe(leaderElected::complete);
+            asEast.changedLeaderId().filter(Optional::isPresent).map(Optional::get).subscribe(leaderElected::complete);
+        } else {
+            leaderElected.complete(usEast.getLeaderId());
+        }
+
         this.router.disable(usEast.getLocalEndpointId());
 
-        CompletableFuture.allOf(stopped_1, stopped_2).get(20000, TimeUnit.MILLISECONDS);
+        CompletableFuture.allOf(stopped_1, stopped_2, leaderElected).get(20000, TimeUnit.MILLISECONDS);
+        if (!detachedEndpoints.await(20000, TimeUnit.MILLISECONDS)) {
+            throw new IllegalStateException("usEast has not detached endpoints");
+        }
 
-        // some time for the backup to be handled
-        Thread.sleep(5000);
+        // add a bit time to change state in raccoon and fetch backups
+        Thread.sleep(2000);
 
         Assertions.assertEquals(NY_GOLD_STOCKPILE + HK_GOLD_STOCKPILE, bcnStockpile.get(GOLD_STOCKPILE));
         Assertions.assertEquals(NY_GOLD_STOCKPILE + HK_GOLD_STOCKPILE, hkStockpile.get(GOLD_STOCKPILE));
@@ -229,23 +243,30 @@ class FederatedStorageStressTest {
 
     @Test
     @Order(8)
-    @DisplayName("When usEast returns to the grid, it is reset and does not contain any gold")
-    void shouldReset() throws ExecutionException, InterruptedException, TimeoutException {
+    @DisplayName("When usEast returns to the grid, it is reset and storage is empty")
+    void test_8() throws ExecutionException, InterruptedException, TimeoutException {
         var started = new CompletableFuture<UUID>();
+        var evicted = new CompletableFuture<List<ModifiedStorageEntry<String, Integer>>>();
         usEast.joinedRemoteEndpoints().subscribe(started::complete);
+
+        this.nyStockpile.events()
+                .collectOn(Schedulers.io(), 1000, 10000)
+                .evictedEntries()
+                .subscribe(evicted::complete);
+
         this.router.enable(usEast.getLocalEndpointId());
 
         started.get(20000, TimeUnit.MILLISECONDS);
 
-        Thread.sleep(5000);
+        evicted.get(10000, TimeUnit.MILLISECONDS);
 
         Assertions.assertEquals(0, nyStockpile.localSize());
     }
 
-    @Test
-    @Order(8)
-    @DisplayName("When ")
-    void hasToBeImplemented_1() {
-        throw new UnsupportedOperationException("Not implemented yet");
-    }
+//    @Test
+//    @Order(9)
+//    @DisplayName("When ")
+//    void test_9() {
+//        throw new UnsupportedOperationException("Not implemented yet");
+//    }
 }

@@ -34,16 +34,16 @@ public final class MapUtils {
         ));
     }
 
-    public static<K, V> Map<K, V> putAll(Map<K, V>... maps) {
+    public static<K, V> Map<K, V> combineAll(Map<K, V>... maps) {
+        if (maps == null) return Collections.emptyMap();
         if (maps.length < 1) {
             return Collections.emptyMap();
         } else if (maps.length == 1) {
             return maps[0];
         }
-        if (maps == null) return Collections.emptyMap();
-        var depot = MapUtils.<K, V>makeMapAssignerDepot();
-        Stream.of(maps).forEach(depot::accept);
-        return depot.get();
+        var result = new HashMap<K, V>();
+        Stream.of(maps).forEach(result::putAll);
+        return Collections.unmodifiableMap(result);
     }
 
     public static<K, V> Depot<Map<K, V>> makeMapAssignerDepot() {
@@ -56,7 +56,7 @@ public final class MapUtils {
 
             @Override
             public Map<K, V> get() {
-                return result;
+                return Collections.unmodifiableMap(result);
             }
         };
     }

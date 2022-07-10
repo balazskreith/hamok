@@ -46,6 +46,13 @@ public class Disposer implements Disposable {
         }
         this.disposed = true;
         this.disposables.dispose();
+        if (this.onCompleted != null) {
+            try {
+                this.onCompleted.run();
+            } catch (Exception ex) {
+                logger.warn("Exception occurred while executing oncompleted for disposer");
+            }
+        }
     }
 
     @Override
@@ -90,7 +97,12 @@ public class Disposer implements Disposable {
         return new Disposable() {
             @Override
             public void dispose() {
-                disposeAction.run();
+                try {
+                    disposeAction.run();
+                } catch (Exception ex) {
+                    logger.warn("Exception occurred while disposing objects", ex);
+                }
+
             }
 
             @Override

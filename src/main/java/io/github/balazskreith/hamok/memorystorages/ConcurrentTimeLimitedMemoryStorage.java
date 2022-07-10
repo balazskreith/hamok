@@ -66,11 +66,15 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public void clear() {
-		this.rwLock.runInWriteLock(() -> {
-			var entries = Set.copyOf(this.map.entrySet());
+		var events = this.rwLock.supplyInWriteLock(() -> {
+			var result = this.map.entrySet()
+					.stream()
+					.map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue()))
+					.collect(Collectors.toList());
 			this.map.clear();
-			entries.stream().map(entry -> StorageEvent.makeDeletedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
+			return result;
 		});
+		events.forEach(this.eventDispatcher::accept);
 	}
 
 	@Override
@@ -99,8 +103,10 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public V set(K key, V value) {
-		return this.rwLock.supplyInWriteLock(() -> {
-			var oldValue = this.map.put(key, value);
+		var oldValue = this.rwLock.supplyInWriteLock(() -> this.map.put(key, value));
+		try {
+			return oldValue;
+		} finally {
 			StorageEvent<K, V> event;
 			if (oldValue == null) {
 				event = StorageEvent.makeCreatedEntryEvent(this.id, key, value);
@@ -108,18 +114,18 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 				event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, value);
 			}
 			this.eventDispatcher.accept(event);
-			return oldValue;
-		});
+		}
 	}
 
 	@Override
 	public Map<K, V> setAll(Map<K, V> map) {
-		return this.rwLock.supplyInWriteLock(() -> {
+		var events = new LinkedList<StorageEvent<K, V>>();
+		Map<K, V> result = this.rwLock.supplyInWriteLock(() -> {
 			var keys = map.keySet();
-			var result = this.map.getAll(keys);
+			var entries = this.map.getAll(keys);
 			this.map.putAll(map);
 			for (var key : keys) {
-				var oldValue = result.get(key);
+				var oldValue = entries.get(key);
 				var newValue = map.get(key);
 				StorageEvent<K, V> event;
 				if (oldValue == null) {
@@ -127,65 +133,52 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 				} else {
 					event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
 				}
-				this.eventDispatcher.accept(event);
+				events.add(event);
 			}
-			return Collections.unmodifiableMap(result);
+			return Collections.<K, V>unmodifiableMap(entries);
 		});
+		try {
+			return result;
+		} finally {
+			events.forEach(this.eventDispatcher::accept);
+		}
 	}
 
 	@Override
 	public boolean delete(K key) {
-		return this.rwLock.supplyInWriteLock(() -> {
-			var oldValue = this.map.remove(key);
-			if (oldValue == null) {
-				return false;
-			}
+		var oldValue = this.rwLock.supplyInWriteLock(() -> this.map.remove(key));
+		if (oldValue == null) {
+			return false;
+		}
+		try {
+			return true;
+		} finally {
 			var event = StorageEvent.makeDeletedEntryEvent(this.id, key, oldValue);
 			this.eventDispatcher.accept(event);
-			return true;
-		});
+		}
 	}
 
 	@Override
 	public Set<K> deleteAll(Set<K> keys) {
-		return this.rwLock.supplyInWriteLock(() -> {
-			var result = new HashSet<K>();
+		var events = new LinkedList<StorageEvent<K, V>>();
+		var result = this.rwLock.supplyInWriteLock(() -> {
+			var entries = new HashSet<K>();
 			for (var key : keys) {
 				var value = this.map.remove(key);
 				if (value == null) continue;
-				result.add(key);
+				entries.add(key);
 				var event = StorageEvent.makeDeletedEntryEvent(this.id, key, value);
-				this.eventDispatcher.accept(event);
+				events.add(event);
 			}
-			return Collections.unmodifiableSet(result);
+			return Collections.unmodifiableSet(entries);
 		});
+		try {
+			return result;
+		} finally {
+			events.forEach(this.eventDispatcher::accept);
+		}
 	}
 
-	@Override
-	public void evict(K key) {
-		this.rwLock.runInWriteLock(() -> {
-			var oldValue =  this.map.remove(key);
-			if (oldValue == null) {
-				return;
-			}
-			var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
-			this.eventDispatcher.accept(event);
-		});
-	}
-
-	@Override
-	public void evictAll(Set<K> keys) {
-		this.rwLock.runInWriteLock(() -> {
-			for (var key : keys) {
-				var oldValue =  this.map.remove(key);
-				if (oldValue == null) {
-					return;
-				}
-				var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
-				this.eventDispatcher.accept(event);
-			}
-		});
-	}
 
 	@Override
 	public Iterator<StorageEntry<K, V>> iterator() {
@@ -210,7 +203,8 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public Map<K, V> insertAll(Map<K, V> entries) {
-		if (entries == null) return Collections.emptyMap();
+		if (entries == null || entries.size() < 1) return Collections.emptyMap();
+		var events = new LinkedList<StorageEvent<K, V>>();
 		var result = new HashMap<K, V>();
 		this.rwLock.runInWriteLock(() -> {
 			var it = entries.entrySet().iterator();
@@ -221,10 +215,18 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 				if (oldValue != null) {
 					result.put(key, oldValue);
 					continue;
+				} else {
+					var event = StorageEvent.makeCreatedEntryEvent(this.id, key, entry.getValue());
+					events.add(event);
 				}
 				this.map.put(key, entry.getValue());
 			}
 		});
-		return result;
+		try {
+			return result;
+		} finally {
+			events.forEach(this.eventDispatcher::accept);
+		}
+
 	}
 }

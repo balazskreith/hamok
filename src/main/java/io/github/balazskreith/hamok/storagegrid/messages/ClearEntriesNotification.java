@@ -1,4 +1,6 @@
 package io.github.balazskreith.hamok.storagegrid.messages;
 
-public record ClearEntriesNotification() {
+import java.util.UUID;
+
+public record ClearEntriesNotification(UUID sourceEndpointId) {
 }

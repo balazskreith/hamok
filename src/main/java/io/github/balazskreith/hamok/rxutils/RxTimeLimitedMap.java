@@ -40,6 +40,12 @@ public class RxTimeLimitedMap<K, V> extends HashMap<K, V> {
     }
 
     @Override
+    public void clear() {
+        this.accessedKeys.clear();
+        super.clear();
+    }
+
+    @Override
     public V put(K key, V value) {
         V result = super.put(key, value);
         var now = Instant.now().toEpochMilli();

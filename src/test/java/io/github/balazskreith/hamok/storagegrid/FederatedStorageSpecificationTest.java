@@ -10,9 +10,9 @@ import java.util.Set;
 import java.util.function.BinaryOperator;
 
 @DisplayName("Federation Storage Specifications Test")
-class FederatedStorageLocalSpecTest {
+class FederatedStorageSpecificationTest {
 
-    private static final Logger logger = LoggerFactory.getLogger(FederatedStorageStressTest.class);
+    private static final Logger logger = LoggerFactory.getLogger(FederatedStorageWorkingTest.class);
 
     private StorageGrid grid;
     private FederatedStorage<String, Integer> storage;
@@ -124,24 +124,6 @@ class FederatedStorageLocalSpecTest {
     void shouldDeleteAll() {
         this.storage.set("one", 1);
         this.storage.deleteAll(Set.of("one"));
-
-        Assertions.assertNull(this.storage.get("one"));
-        Assertions.assertTrue(this.storage.localIsEmpty());
-    }
-
-    @Test
-    void shouldEvict() {
-        this.storage.set("one", 1);
-        this.storage.evict("one");
-
-        Assertions.assertNull(this.storage.get("one"));
-        Assertions.assertTrue(this.storage.localIsEmpty());
-    }
-
-    @Test
-    void shouldEvictAll() {
-        this.storage.set("one", 1);
-        this.storage.evictAll(Set.of("one"));
 
         Assertions.assertNull(this.storage.get("one"));
         Assertions.assertTrue(this.storage.localIsEmpty());

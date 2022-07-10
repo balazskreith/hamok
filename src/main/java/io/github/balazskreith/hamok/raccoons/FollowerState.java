@@ -2,6 +2,7 @@ package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.raccoons.events.*;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,8 +37,13 @@ class FollowerState extends AbstractState {
     }
 
     @Override
-    public Integer submit(byte[] entry) {
-        return null;
+    void start() {
+        // nothing we do here
+    }
+
+    @Override
+    public boolean submit(Message entry) {
+        return false;
     }
 
     @Override
@@ -110,9 +116,15 @@ class FollowerState extends AbstractState {
         var logs = this.logs();
 
         // let's check if we are covered with the entries or not
+        logger.debug("{} next index: {}, request leader next index: {}, request entries size: {}",
+                this.getLocalPeerId(),
+                logs.getNextIndex(),
+                request.leaderNextIndex(),
+                request.entries().size()
+        );
         if (logs.getNextIndex() < request.leaderNextIndex() - request.entries().size()) {
             if (!this.syncRequested) {
-                logger.info("{} request a commit sync as the owned next index is {} and the leader next index is {}, and the provided number of entries ({}) insufficient to close the gap.",
+                logger.warn("{} request a commit sync as the owned next index is {} and the leader next index is {}, and the provided number of entries ({}) insufficient to close the gap.",
                         this.getLocalPeerId(),
                         logs.getNextIndex(),
                         request.leaderNextIndex(),
@@ -168,8 +180,9 @@ class FollowerState extends AbstractState {
 
     @Override
     void receiveHelloNotification(HelloNotification notification) {
+        // if no leader has been elected we add the endpoint
         // only join remote peers if no remote peer is available, and obviously no leader has been elected
-        if (this.remotePeers().size() < 1) {
+        if (this.config().autoDiscovery() && this.getLeaderId() == null) {
             this.remotePeers().join(notification.sourcePeerId());
         }
         logger.info("{} received hello notification {}", this.getLocalPeerId(), notification);
@@ -179,13 +192,6 @@ class FollowerState extends AbstractState {
     void receiveEndpointNotification(EndpointStatesNotification notification) {
         // update the server endpoint states
         var remotePeers = this.remotePeers();
-        remotePeers.touch(notification.sourceEndpointId());
-        if (notification.activeEndpointIds() != null) {
-            notification.activeEndpointIds()
-                    .stream()
-                    .filter(peerId -> UuidTools.notEquals(peerId, this.getLocalPeerId()))
-                    .forEach(remotePeers::touch);
-        }
         if (notification.inactiveEndpointIds() != null) {
             boolean resetRequest = false;
             for (var it = notification.inactiveEndpointIds().iterator(); it.hasNext(); ) {
@@ -201,8 +207,16 @@ class FollowerState extends AbstractState {
                 remotePeers.detach(inactivePeerId);
             }
             if (resetRequest) {
+                logger.info("Reset is requested by a leader {} to this endpoint {} due to previous inactivity", notification.sourceEndpointId(), notification.destinationEndpointId());
                 this.inactivatedLocalPeerId();
             }
+        }
+        remotePeers.touch(notification.sourceEndpointId());
+        if (notification.activeEndpointIds() != null) {
+            notification.activeEndpointIds()
+                    .stream()
+                    .filter(peerId -> UuidTools.notEquals(peerId, this.getLocalPeerId()))
+                    .forEach(remotePeers::touch);
         }
         this.updated.set(Instant.now().toEpochMilli());
     }

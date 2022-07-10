@@ -9,11 +9,11 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-public class VMap<K, V> implements Map<K, V> {
+public class HMap<K, V> implements Map<K, V> {
 
 	private final Storage<K, V> storage;
 
-	public VMap(Storage<K, V> storage) {
+	public HMap(Storage<K, V> storage) {
 		this.storage = storage;
 	}
 

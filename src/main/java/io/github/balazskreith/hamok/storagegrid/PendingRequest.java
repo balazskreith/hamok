@@ -1,6 +1,5 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +10,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public class PendingRequest implements Consumer<Message> {
     private static final Logger logger = LoggerFactory.getLogger(PendingRequest.class);
@@ -37,22 +37,24 @@ public class PendingRequest implements Consumer<Message> {
     @Override
     public void accept(Message message) {
         if (message.sourceId == null) {
-            logger.warn("No source id is assigned for message: {}", JsonUtils.objectToString(message));
+            logger.warn("No source id is assigned for message: {}", message);
             return;
         }
         boolean completed = false;
         try {
             synchronized (this) {
                 var pendingBefore = this.pendingEndpointIds.size();
-                if (!this.pendingEndpointIds.remove(message.sourceId)) {
-                    logger.info("Source endpoint {} is not found in pending ids", message.sourceId);
+                if (!this.pendingEndpointIds.remove(message.sourceId) && this.neededResponses < 1) {
+                    logger.debug("Source endpoint {} is not found in pending ids of request {}", message.sourceId, message.requestId);
+                    // fail-safe double checking to complete every pending request which has to be completed
                     completed = pendingBefore == 0;
+                    return;
                 }
                 var pendingAfter = this.pendingEndpointIds.size();
                 this.responses.add(message);
                 ++this.receivedResponse;
-//                logger.warn("{} pending before {}, pending after: {}", this.id.toString().substring(0, 8), pendingBefore, pendingAfter);
-                completed = (pendingBefore == 1 && pendingAfter == 0) || (0 < this.neededResponses && this.neededResponses <= this.receivedResponse);
+                logger.debug("{} pending before {}, pending after: {}", this.id.toString().substring(0, 8), pendingBefore, pendingAfter);
+                completed = (pendingBefore == 1 && pendingAfter == 0) || (0 < this.neededResponses && this.receivedResponse <= this.neededResponses);
             }
         } finally {
             if (completed) {
@@ -92,7 +94,8 @@ public class PendingRequest implements Consumer<Message> {
     public List<Message> get()  throws ExecutionException, InterruptedException, TimeoutException  {
         synchronized (this) {
             if (this.pendingEndpointIds.size() < 1 && this.neededResponses < 0) {
-                return Collections.emptyList();
+                // if the application receive the response faster than reaching the get() point, then we are already done
+                return Collections.unmodifiableList(this.responses);
             }
         }
         try {
@@ -107,13 +110,14 @@ public class PendingRequest implements Consumer<Message> {
         }
 
         synchronized (this) {
-            return List.copyOf(this.responses);
+            logger.debug("Pending request is resolved by responses {}", this.responses);
+            return Collections.unmodifiableList(this.responses);
         }
     }
 
     @Override
     public String toString() {
-        var remainingEndpoints = JsonUtils.objectToString(this.pendingEndpointIds);
+        var remainingEndpoints = String.join(", ", this.pendingEndpointIds.stream().map(Object::toString).collect(Collectors.toList()));
         return String.format("Pending request id: %s, received responses: %d, remaining endpoints: %s, timeout: %d",
                 this.id,
                 this.receivedResponse,
@@ -124,6 +128,7 @@ public class PendingRequest implements Consumer<Message> {
 
     public static class Builder {
         private PendingRequest pendingRequest = new PendingRequest();
+        private Consumer<PendingRequest> onBuiltListener = r -> {};
         Builder() {
 
         }
@@ -148,9 +153,18 @@ public class PendingRequest implements Consumer<Message> {
             return this;
         }
 
+        Builder onBuilt(Consumer<PendingRequest> onBuiltListener) {
+            this.onBuiltListener = onBuiltListener;
+            return this;
+        }
+
         public PendingRequest build() {
             Objects.requireNonNull(this.pendingRequest.id, "Pending request must have an id");
-            return this.pendingRequest;
+            try {
+                return this.pendingRequest;
+            } finally {
+                this.onBuiltListener.accept(this.pendingRequest);
+            }
         }
 
 

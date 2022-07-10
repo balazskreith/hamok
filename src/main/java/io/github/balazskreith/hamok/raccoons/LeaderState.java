@@ -1,6 +1,8 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.common.CompletablePromises;
 import io.github.balazskreith.hamok.raccoons.events.*;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -9,6 +11,7 @@ import java.util.Set;
 
 class LeaderState extends AbstractState {
 
+    private final CompletablePromises<Integer, Boolean> submissions;
     private static final Logger logger = LoggerFactory.getLogger(LeaderState.class);
     private volatile long lastRemoteEndpointChecked = -1;
     private final int currentTerm;
@@ -17,9 +20,13 @@ class LeaderState extends AbstractState {
             Raccoon base
     ) {
         super(base);
+        this.submissions = new CompletablePromises<>(5000, "Raccoon submissions");
         this.currentTerm = this.syncedProperties().currentTerm.incrementAndGet();
+    }
+
+    @Override
+    void start() {
         this.base.setActualLeaderId(this.config().id());
-        // send the append request immediately
         this.updateFollowers();
     }
 
@@ -29,8 +36,11 @@ class LeaderState extends AbstractState {
     }
 
     @Override
-    public Integer submit(byte[] entry) {
-        return this.logs().submit(this.currentTerm, entry);
+    public boolean submit(Message entry) {
+        logger.info("{} submitted entry started", this.getLocalPeerId());
+        var commitIndex = this.logs().submit(this.currentTerm, entry);
+        this.submissions.create(commitIndex);
+        return this.submissions.await(commitIndex).orElse(false);
     }
 
     @Override
@@ -91,6 +101,7 @@ class LeaderState extends AbstractState {
             }
             if (remotePeerIds.size() + 1 < matchCount * 2) {
                 logs.commit();
+                this.submissions.resolve(logEntry.index(), true);
             }
         }
     }
@@ -110,14 +121,16 @@ class LeaderState extends AbstractState {
         var hashBefore = remotePeers.hashCode();
         remotePeers.touch(remotePeerId);
         var hashAfter = remotePeers.hashCode();
+        // if the state of the remote peers has changed we inform all members
         if (hashBefore != hashAfter) {
-            this.sendEndpointStateNotification(Set.of(remotePeerId));
+            this.sendEndpointStateNotification(remotePeers.getActiveRemotePeerIds());
+//            this.sendEndpointStateNotification(Set.of(remotePeerId));
         }
     }
 
     @Override
     void receiveEndpointNotification(EndpointStatesNotification notification) {
-        logger.warn("Only a leader should make an endpoint state notification");
+        logger.warn("{} is a leader and received endpoint state notification from {}. ", notification.destinationEndpointId(), notification.sourceEndpointId());
     }
 
     @Override
@@ -205,7 +218,7 @@ class LeaderState extends AbstractState {
                     logs.getCommitIndex(),
                     logs.getNextIndex()
             );
-//            logger.info("{} sending appendEntriesRequest {}", this.getId(), appendEntries);
+//            logger.info("{} sending appendEntriesRequest {}", this.getLocalPeerId(), appendEntries);
             this.sendAppendEntriesRequest(appendEntries);
         }
     }

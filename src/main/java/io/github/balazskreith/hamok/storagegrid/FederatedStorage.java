@@ -1,3 +1,4 @@
+
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
@@ -5,7 +6,6 @@ import io.github.balazskreith.hamok.StorageBatchedIterator;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
 import io.github.balazskreith.hamok.common.Disposer;
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
@@ -53,14 +53,11 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
             .onGetEntriesRequest(getEntriesRequest -> {
                 var entries = this.storage.getAll(getEntriesRequest.keys());
                 var response = getEntriesRequest.createResponse(entries);
-                logger.info("{} get response: {}", this.endpoint.getLocalEndpointId(), response);
                 this.endpoint.sendGetEntriesResponse(response);
             }).onDeleteEntriesRequest(request -> {
                 var deletedKeys = this.storage.deleteAll(request.keys());
                 var response = request.createResponse(deletedKeys);
                 this.endpoint.sendDeleteEntriesResponse(response);
-            }).onEvictedEntriesNotification(request -> {
-                this.storage.evictAll(request.keys());
             }).onUpdateEntriesNotification(notification -> {
                 var entries = notification.entries();
 
@@ -77,7 +74,6 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 }
             }).onUpdateEntriesRequest(request -> {
                 var entries = request.entries();
-
                 // only update entries what we have!
                 var oldEntries = this.storage.getAll(entries.keySet());
                 var updatedEntries = entries.entrySet().stream()
@@ -104,13 +100,12 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                         this.storage.keys()
                 );
                 this.endpoint.sendGetKeysResponse(response);
+            }).onClearEntriesNotification(notification -> {
+                var keys = this.storage.keys();
+                this.storage.clear();
+                this.backupStorage.delete(keys);
             }).onRemoteEndpointJoined(remoteEndpointId -> {
-//                if (this.endpoint.getRemoteEndpointIds().size() == 1) {
-//                    // this is the first time any endpoint joined
-//                    var localKeys = this.storage.keys();
-//                    var entries = this.storage.getAll(localKeys);
-//                    this.backupStorage.save(entries);
-//                }
+
             }).onRemoteEndpointDetached(remoteEndpointId -> {
                 var savedEntries = this.backupStorage.extract(remoteEndpointId);
                 if (savedEntries.isEmpty()) {
@@ -121,23 +116,21 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 depot.accept(localEntries);
                 depot.accept(savedEntries);
                 var updatedEntries = depot.get();
-                logger.info("{} detected remote endpoint {} detached. extracted entries from backup: {}, localEntries: {}, updatedEntries: {}",
+                logger.debug("{} detected remote endpoint {} detached. extracted entries from backup: {}, localEntries: {}, updatedEntries: {}",
                         this.endpoint.getLocalEndpointId(),
                         remoteEndpointId,
-                        JsonUtils.objectToString(savedEntries),
-                        JsonUtils.objectToString(localEntries),
-                        JsonUtils.objectToString(updatedEntries)
+                        savedEntries.size(),
+                        localEntries.size(),
+                        updatedEntries.size()
                 );
                 this.storage.setAll(updatedEntries);
             }).onLocalEndpointReset(payload -> {
-                // at this point we know that this endpoint became inactive, and it is reinstated now.
-                // we need to request all keys from all remote endpoints, and evict them from here, because remote endpoints
-                // fetched our previous keys from their backup. if this endpoint has some key intersected with remote and changed locally after,
-                // the changes will be lost.
-                // all new keys created in this endpoint after it was detached will remain in the possession of the storage and
-                // accessible for other storages.
-                var remoteKeys = this.endpoint.requestGetKeys();
-                this.storage.evictAll(remoteKeys);
+                var evictedEntries = this.storage.size();
+                this.storage.clear();
+                var backupMetrics = this.backupStorage.metrics();
+                this.backupStorage.clear();
+                logger.info("{} Reset Storage {}. Evicted storage entries: {}, Deleted backup entries: {}",
+                        this.endpoint.getLocalEndpointId(), this.storage.getId(), evictedEntries, backupMetrics.storedEntries());
             });
 
         var collectedEvents = this.storage.events()
@@ -177,10 +170,7 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                     this.backupStorage.delete(keys);
                 }))
                 .addDisposable(collectedEvents.evictedEntries().subscribe(modifiedStorageEntries -> {
-                    var keys = modifiedStorageEntries.stream()
-                            .map(entry -> entry.getKey())
-                            .collect(Collectors.toSet());
-                    this.backupStorage.delete(keys);
+                    // evicted items from local storage happens when clear is called.
                 }))
                 .build();
     }
@@ -231,11 +221,34 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public V set(K key, V value) {
-        return this.storage.set(key, value);
+        var oldValue = this.storage.get(key);
+        if (oldValue == null) {
+            return this.storage.set(key, value);
+        }
+        var newValue = this.merge.apply(oldValue, value);
+        return this.storage.set(key, newValue);
     }
 
     @Override
     public Map<K, V> setAll(Map<K, V> m) {
+        if (m == null || m.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        var oldValues = this.storage.getAll(m.keySet());
+        if (oldValues == null || oldValues.isEmpty()) {
+            return this.storage.setAll(m);
+        }
+        var newValues = new HashMap<K, V>();
+        for (var entry : m.entrySet()) {
+            var key = entry.getKey();
+            var oldValue = oldValues.get(key);
+            if (oldValue == null) {
+                newValues.put(key, entry.getValue());
+            } else {
+                var newValue = this.merge.apply(oldValue, entry.getValue());
+                newValues.put(key, newValue);
+            }
+        }
         return this.storage.setAll(m);
     }
 
@@ -258,18 +271,6 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
         return this.storage.deleteAll(keys);
     }
 
-    @Override
-    public void evict(K key) {
-        this.evictAll(Set.of(key));
-    }
-
-    @Override
-    public void evictAll(Set<K> keys) {
-        if (keys.size() < 1) {
-            return;
-        }
-        this.storage.evictAll(keys);
-    }
 
     @Override
     public boolean isEmpty() {
@@ -281,15 +282,15 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public void clear() {
-        var notification = new ClearEntriesNotification();
-        this.endpoint.sendClearEntriesNotification(notification);
         this.storage.clear();
+        var notification = new ClearEntriesNotification(this.endpoint.getLocalEndpointId());
+        this.endpoint.sendClearEntriesNotification(notification);
     }
 
     @Override
     public Set<K> keys() {
         Set<K> remoteKeys = this.endpoint.requestGetKeys();
-        return SetUtils.addAll(remoteKeys, this.storage.keys());
+        return SetUtils.combineAll(remoteKeys, this.storage.keys());
     }
 
     @Override
@@ -325,12 +326,12 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
     }
 
     @Override
-    public void localClear() {
-        this.storage.clear();
+    public Iterator<StorageEntry<K, V>> localIterator() {
+        return this.storage.iterator();
     }
 
     @Override
-    public Iterator<StorageEntry<K, V>> localIterator() {
-        return this.storage.iterator();
+    public void localClear() {
+        this.storage.clear();
     }
 }

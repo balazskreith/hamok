@@ -1,10 +1,10 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -24,7 +24,6 @@ class RaftLogsTest {
     private Raccoon leader;
     private Raccoon follower_1;
     private Raccoon follower_2;
-    private Raccoon stopped;
 
     @Test
     @Order(1)
@@ -57,10 +56,12 @@ class RaftLogsTest {
     void test_2() throws InterruptedException, ExecutionException, TimeoutException {
         var started = Instant.now().toEpochMilli();
         for (int i = 0; true; ++i) {
-            var future = new CompletableFuture<byte[]>();
+            var future = new CompletableFuture<Message>();
             var d = this.follower_1.committedEntries().map(LogEntry::entry).subscribe(future::complete);
             var testString = String.format("test-%d", i);
-            this.leader.submit(testString.getBytes(StandardCharsets.UTF_8));
+            var message = new Message();
+            message.type = testString;
+            this.leader.submit(message);
 
             future.get(1000, TimeUnit.MILLISECONDS);
             var now = Instant.now().toEpochMilli();

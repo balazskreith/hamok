@@ -138,23 +138,12 @@ public interface Storage<K, V> extends AutoCloseable {
      */
     Set<K> deleteAll(Set<K> keys);
 
-    /**
-     * Evict an entry from a storage
-     *
-     * @param key
-     */
-    default void evict(K key) {
-        this.evictAll(Set.of(key));
+
+    static <U, R> Storage<U, R> fromMap(Map<U, R> map, String storageId) {
+        return new StorageFromMap<U, R>(storageId, map);
     }
 
-    /**
-     * Evict all entries belong to the given keys
-     *
-     * The difference between evict and delete are the followings:
-     *  - delete requires a reply from the storage about the deleted keys, evict does not
-     *  - evict generates evicted events, thus the interpretation of the event may be different
-     *
-      * @param keys
-     */
-    void evictAll(Set<K> keys);
+    static <U, R> Map<U, R> toMap(Storage<U, R> storage, Class<U> keyClass, Class<R> valueClass) {
+        return new MapFromStorage<>(keyClass, valueClass, storage);
+    }
 }

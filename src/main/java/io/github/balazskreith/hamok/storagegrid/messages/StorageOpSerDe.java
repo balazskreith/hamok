@@ -23,7 +23,7 @@ public class StorageOpSerDe<K, V> {
     }
 
     public ClearEntriesNotification deserializeClearEntriesNotification(Message message) {
-        return new ClearEntriesNotification();
+        return new ClearEntriesNotification(message.sourceId);
     }
 
     public Message serializeGetKeysRequest(GetKeysRequest request) {
@@ -269,23 +269,6 @@ public class StorageOpSerDe<K, V> {
         return new InsertEntriesResponse<>(
                 message.requestId,
                 entries,
-                message.destinationId
-        );
-    }
-
-    public Message serializeEvictEntriesNotification(EvictEntriesNotification<K> notification) {
-        var result = new Message();
-        result.type = MessageType.EVICT_ENTRIES_NOTIFICATION.name();
-        result.keys = this.serializeKeys(notification.keys());
-        result.destinationId = notification.destinationEndpointId();
-        return result;
-    }
-
-    public EvictEntriesNotification<K> deserializeEvictEntriesNotification(Message message) {
-        var keys = this.deserializeKeys(message.keys);
-        return new EvictEntriesNotification<>(
-                keys,
-                message.sourceId,
                 message.destinationId
         );
     }

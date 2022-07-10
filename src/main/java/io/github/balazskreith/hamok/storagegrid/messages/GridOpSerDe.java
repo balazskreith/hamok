@@ -3,9 +3,7 @@ package io.github.balazskreith.hamok.storagegrid.messages;
 
 import io.github.balazskreith.hamok.raccoons.events.*;
 
-import java.util.Base64;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class GridOpSerDe {
@@ -44,30 +42,18 @@ public class GridOpSerDe {
         result.raftPrevLogTerm = request.prevLogTerm();
         result.raftPrevLogIndex = request.prevLogIndex();
         result.raftTerm = request.term();
-        if (request.entries() != null) {
-            result.entries = request.entries().stream()
-                    .map(base64Encoder::encodeToString)
-                    .collect(Collectors.toList());
-        } else {
-            result.entries = Collections.emptyList();
-        }
+        result.entries = request.entries();
         return result;
     }
 
     public RaftAppendEntriesRequest deserializeRaftAppendRequest(Message message) {
-        List<byte[]> entries;
-        if (message.entries == null) {
-            entries = Collections.emptyList();
-        } else {
-            entries = message.entries.stream().map(this.base64Decoder::decode).collect(Collectors.toList());
-        }
         return new RaftAppendEntriesRequest(
                 message.destinationId,
                 message.raftTerm,
                 message.raftLeaderId,
                 message.raftPrevLogIndex,
                 message.raftPrevLogTerm,
-                entries,
+                message.entries,
                 message.raftCommitIndex,
                 message.raftLeaderNextIndex
         );
@@ -136,17 +122,19 @@ public class GridOpSerDe {
         var result = new Message();
         result.type = MessageType.SUBMIT_REQUEST.name();
         result.requestId = request.requestId();
-        result.entries = List.of(base64Encoder.encodeToString(request.entry()));
+        result.entries = List.of(request.entry());
+        result.destinationId = request.destinationId();
         return result;
     }
 
     public SubmitRequest deserializeSubmitRequest(Message message) {
-        byte[] entry = null;
-        if (message.entries != null) {
-            entry = this.base64Decoder.decode(message.entries.get(0));
+        Message entry = null;
+        if (message.entries != null && 0 < message.entries.size()) {
+            entry = message.entries.get(0);
         }
         return new SubmitRequest(
                 message.requestId,
+                message.destinationId,
                 entry
         );
     }
@@ -172,6 +160,7 @@ public class GridOpSerDe {
         result.requestId = response.requestId();
         result.success = response.success();
         result.raftLeaderId = response.leaderId();
+        result.destinationId = response.destinationId();
         return result;
     }
 
@@ -189,21 +178,57 @@ public class GridOpSerDe {
         result.type = MessageType.STORAGE_SYNC_REQUEST.name();
         result.requestId = request.requestId();
         result.sourceId = request.sourceEndpointId();
+        result.destinationId = request.leaderId();
         return result;
     }
 
     public StorageSyncRequest deserializeStorageSyncRequest(Message request) {
         return new StorageSyncRequest(
                 request.requestId,
-                request.sourceId
+                request.sourceId,
+                request.destinationId
         );
     }
 
     public StorageSyncResponse deserializeStorageSyncResponse(Message message) {
-        return null;
+        var storageUpdateNotifications = new HashMap<String, Message>();
+        if (message.keys != null && message.entries != null) {
+            var length = Math.min(message.keys.size(), message.entries.size());
+            for (int i = 0; i < length; ++i) {
+                var storageId = message.keys.get(i);
+                storageUpdateNotifications.put(storageId, message.entries.get(i));
+            }
+        }
+        return new StorageSyncResponse(
+                message.requestId,
+                storageUpdateNotifications,
+                message.raftCommitIndex,
+                message.destinationId,
+                message.success,
+                message.raftLeaderId
+        );
     }
 
     public Message serializeStorageSyncResponse(StorageSyncResponse response) {
-        return null;
+        var result = new Message();
+        result.type = MessageType.STORAGE_SYNC_RESPONSE.name();
+        result.requestId = response.requestId();
+        result.destinationId = response.destinationId();
+        result.raftLeaderId = response.leaderId();
+        result.raftCommitIndex = response.commitIndex();
+        result.success = response.success();
+        if (response.storageUpdateNotifications() != null) {
+            result.keys = new LinkedList<>();
+            result.entries = new LinkedList<>();
+            for (var entry : response.storageUpdateNotifications().entrySet()) {
+                var storageId = entry.getKey();
+                result.keys.add(storageId);
+                result.entries.add(entry.getValue());
+            }
+        } else {
+            result.keys = Collections.emptyList();
+            result.entries = Collections.emptyList();
+        }
+        return result;
     }
 }

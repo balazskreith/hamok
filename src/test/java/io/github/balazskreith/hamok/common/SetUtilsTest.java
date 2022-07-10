@@ -9,7 +9,7 @@ class SetUtilsTest {
 
     @Test
     void shouldAddAll_1() {
-        var set = SetUtils.<Integer>addAll(Set.of(1), Set.of(2));
+        var set = SetUtils.<Integer>combineAll(Set.of(1), Set.of(2));
 
         Assertions.assertTrue(set.contains(1));
         Assertions.assertTrue(set.contains(2));

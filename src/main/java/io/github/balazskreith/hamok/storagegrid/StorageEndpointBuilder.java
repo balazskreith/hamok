@@ -5,6 +5,8 @@ import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 public class StorageEndpointBuilder<U, R> {
@@ -30,6 +32,11 @@ public class StorageEndpointBuilder<U, R> {
         return this;
     }
 
+    StorageEndpointBuilder<U, R> setDefaultResolvingEndpointIdsSupplier(Supplier<Set<UUID>> defaultResolvingEndpointIdsSupplier) {
+        this.result.defaultResolvingEndpointIds = defaultResolvingEndpointIdsSupplier;
+        return this;
+    }
+
     StorageEndpointBuilder<U, R> setProtocol(String value) {
         this.result.protocol = value;
         return this;
@@ -45,6 +52,7 @@ public class StorageEndpointBuilder<U, R> {
         Objects.requireNonNull(this.result.storageId, "StorageId cannot be null");
         Objects.requireNonNull(this.result.grid, "storageGrid must be defined");
         Objects.requireNonNull(this.result.depotProvider, "Depot provider must be given");
+        this.result.init();
         try {
             return this.result;
         } finally {

@@ -4,7 +4,7 @@ import java.util.Map;
 import java.util.UUID;
 
 public record StorageSyncResponse(UUID requestId,
-                                  Map<String, byte[]> storageUpdateNotifications,
+                                  Map<String, Message> storageUpdateNotifications,
                                   int commitIndex,
                                   UUID destinationId,
                                   boolean success,

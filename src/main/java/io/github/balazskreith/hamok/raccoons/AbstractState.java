@@ -2,6 +2,7 @@ package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.raccoons.events.*;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,7 +13,6 @@ abstract class AbstractState implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(AbstractState.class);
 
-    private final Object oneMessage = new Object();
     protected Raccoon base;
 
     protected AbstractState(Raccoon base) {
@@ -25,7 +25,9 @@ abstract class AbstractState implements Runnable {
 
     public abstract RaftState getState();
 
-    public abstract Integer submit(byte[] bytes);
+    public abstract boolean submit(Message message);
+
+    abstract void start();
 
     abstract void receiveVoteRequested(RaftVoteRequest request);
     abstract void receiveVoteResponse(RaftVoteResponse response);
@@ -98,6 +100,10 @@ abstract class AbstractState implements Runnable {
         this.base.setActualLeaderId(leaderId);
     }
 
+    protected UUID getLeaderId() {
+        return this.base.getLeaderId();
+    }
+
     protected void requestCommitIndexSync(UUID leaderId) {
         this.base.requestCommitIndexSync();
     }
@@ -112,7 +118,7 @@ abstract class AbstractState implements Runnable {
             return;
         }
         var remotePeers = this.remotePeers();
-        var activePeerIds = SetUtils.addAll(remotePeers.getActiveRemotePeerIds(), Set.of(this.getLocalPeerId()));
+        var activePeerIds = SetUtils.combineAll(remotePeers.getActiveRemotePeerIds(), Set.of(this.getLocalPeerId()));
         var inactiveRemotePeerIds = remotePeers.getInActiveRemotePeerIds();
         for (var remotePeerId : remotePeerIds) {
             var notification = new EndpointStatesNotification(
@@ -122,6 +128,7 @@ abstract class AbstractState implements Runnable {
                     remotePeerId
             );
             this.base.outboundEvents.endpointStateNotifications().onNext(notification);
+
         }
 
     }

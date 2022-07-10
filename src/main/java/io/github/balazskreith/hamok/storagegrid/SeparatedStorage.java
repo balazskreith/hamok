@@ -1,13 +1,13 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
+import io.github.balazskreith.hamok.StorageBatchedIterator;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
-import io.github.balazskreith.hamok.storagegrid.messages.EvictEntriesNotification;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
  * @param <K>
  * @param <V>
  */
-public class SeparatedStorage<K, V> implements Storage<K, V> {
+public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(SeparatedStorage.class);
     static final String PROTOCOL_NAME = "separated-storage";
 
@@ -34,13 +34,16 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
     private StorageEndpoint<K, V> endpoint;
     private final Storage<K, V> storage;
     private final BackupStorage<K, V> backupStorage;
+    private final SeparatedStorageConfig config;
     private final Disposer disposer;
 
     SeparatedStorage(
             Storage<K, V> storage,
             StorageEndpoint<K, V> endpoint,
-            BackupStorage<K, V> backupStorage
+            BackupStorage<K, V> backupStorage,
+            SeparatedStorageConfig config
     ) {
+        this.config = config;
         this.backupStorage = backupStorage;
         this.storage = storage;
         this.endpoint = endpoint
@@ -89,15 +92,16 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
                 var savedEntries = this.backupStorage.extract(remoteEndpointId);
                 this.storage.setAll(savedEntries);
             }).onLocalEndpointReset(payload -> {
-                // we evict all keys from the local storage (it will not send an
-                // a notification to the remote endpoints, because the direct access of the local storage
-                // but it will send an event to the backup which evict all entries without saving it on another backup
-                var keys = this.storage.keys();
-                this.storage.evictAll(keys);
-            });
+                var evictedEntries = this.storage.size();
+                this.storage.clear();
+                var backupMetrics = this.backupStorage.metrics();
+                this.backupStorage.clear();
+                logger.info("{} Reset Storage {}. Evicted storage entries: {}, Deleted backup entries: {}",
+                        this.endpoint.getLocalEndpointId(), this.storage.getId(), evictedEntries, backupMetrics.storedEntries());
+                });
 
         var collectedEvents = this.storage.events()
-                .collectOn(Schedulers.io(), 100, 1000);
+                .collectOn(Schedulers.io(), this.config.maxCollectedActualStorageTimeInMs(), this.config.maxCollectedActualStorageEvents());
         this.disposer = Disposer.builder()
                 .addDisposable(collectedEvents.createdEntries().subscribe(modifiedStorageEntries -> {
                     var entries = modifiedStorageEntries.stream().collect(Collectors.toMap(
@@ -211,7 +215,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
         if (updatedRemoteEntries != null && 0 < updatedRemoteEntries.size()) {
             updatedRemoteEntries.keySet().stream().forEach(missingKeys::remove);
         }
-        var result = MapUtils.putAll(updatedLocalEntries, updatedRemoteEntries);
+        var result = MapUtils.combineAll(updatedLocalEntries, updatedRemoteEntries);
         if (missingKeys.size() < 1) {
             return result;
         }
@@ -237,7 +241,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
         if (0 < existingRemoteEntries.size()) {
             existingRemoteEntries.keySet().stream().forEach(missingKeys::remove);
         }
-        var result = MapUtils.putAll(existingLocalEntries, existingRemoteEntries);
+        var result = MapUtils.combineAll(existingLocalEntries, existingRemoteEntries);
         if (missingKeys.size() < 1) {
             return result;
         }
@@ -245,7 +249,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
                 Function.identity(),
                 key -> entries.get(key)
         ));
-        return MapUtils.putAll(result, this.storage.insertAll(newEntries));
+        return MapUtils.combineAll(result, this.storage.insertAll(newEntries));
     }
 
     @Override
@@ -275,23 +279,9 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
                     .collect(Collectors.toSet());
         }
         var remoteDeletedKeys = this.endpoint.requestDeleteEntries(remainingKeys);
-        return SetUtils.addAll(localDeletedKeys, remoteDeletedKeys);
+        return SetUtils.combineAll(localDeletedKeys, remoteDeletedKeys);
     }
 
-    @Override
-    public void evict(K key) {
-        this.evictAll(Set.of(key));
-    }
-
-    @Override
-    public void evictAll(Set<K> keys) {
-        if (keys.size() < 1) {
-            return;
-        }
-        this.storage.evictAll(keys);
-        var notification = new EvictEntriesNotification<K>(keys, null, null);
-        this.endpoint.sendEvictedEntriesNotification(notification);
-    }
 
     @Override
     public boolean isEmpty() {
@@ -315,7 +305,7 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
 
     @Override
     public Iterator<StorageEntry<K, V>> iterator() {
-        return this.storage.iterator();
+        return new StorageBatchedIterator<>(this, this.config.iteratorBatchSize());
     }
 
     @Override
@@ -323,5 +313,30 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
         this.storage.close();
         this.backupStorage.close();
         this.disposer.dispose();
+    }
+
+    @Override
+    public boolean localIsEmpty() {
+        return this.storage.isEmpty();
+    }
+
+    @Override
+    public int localSize() {
+        return this.storage.size();
+    }
+
+    @Override
+    public Set<K> localKeys() {
+        return this.storage.keys();
+    }
+
+    @Override
+    public Iterator<StorageEntry<K, V>> localIterator() {
+        return this.storage.iterator();
+    }
+
+    @Override
+    public void localClear() {
+        this.storage.clear();
     }
 }

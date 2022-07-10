@@ -1,6 +1,5 @@
 package io.github.balazskreith.hamok.storagegrid.backups;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.storagegrid.StorageEndpoint;
@@ -42,10 +41,8 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
                 this.storedEntries.put(remoteEndpointId, remoteEndpointStoredEntries);
             }
             remoteEndpointStoredEntries.putAll(notification.entries());
-            logger.info("{} received update notification for backups. {}. StoredEntries: {}", endpoint.getLocalEndpointId(), JsonUtils.objectToString(storedEntries), JsonUtils.objectToString(this.storedEntries));
         }).onDeleteEntriesNotification(notification -> {
             this.evict(notification.keys());
-            logger.debug("{} received delete notification for backups. {}. Stored entries: {}", endpoint.getLocalEndpointId(), notification.keys(), JsonUtils.objectToString(this.storedEntries));
         }).onRemoteEndpointJoined(remoteEndpointId -> {
             var oldList = this.remoteEndpointIdsListHolder.get();
             var newList = Stream.concat(oldList.stream(), List.of(remoteEndpointId).stream())
@@ -172,7 +169,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             return Collections.emptyMap();
         }
         var result = Utils.firstNonNull(this.storedEntries.remove(endpointId), Collections.<K, V>emptyMap());
-        logger.info("{} Extracted {} entries for remote endpoint {}. Stored Entries: {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId, JsonUtils.objectToString(this.storedEntries));
+        logger.debug("{} Extracted {} entries for remote endpoint {}. Stored Entries: {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId, this.storedEntries);
         return result;
     }
 
@@ -181,12 +178,21 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         this.storedEntries.clear();
     }
 
+    @Override
+    public BackupStats metrics() {
+        return  new BackupStats(
+                this.endpoint.getStorageId(),
+                this.storedEntries.size(),
+                this.savedEntries.size()
+        );
+    }
+
     private void saveEntries(UUID remoteEndpointId, Map<K, V> entries) {
         var notification = UpdateEntriesNotification.<K, V>builder()
                 .setEntries(entries)
                 .setDestinationEndpointId(remoteEndpointId)
                 .build();
-        logger.info("{} Save entries {} on endpoint {}", this.endpoint.getLocalEndpointId(), JsonUtils.objectToString(entries), remoteEndpointId);
+//        logger.info("{} Save entries {} on endpoint {}", this.endpoint.getLocalEndpointId(), JsonUtils.objectToString(entries), remoteEndpointId);
         this.endpoint.sendUpdateEntriesNotification(notification);
         var toSave = entries.keySet().stream().map(key -> new SavedEntry<K>(key, remoteEndpointId)).collect(Collectors.toMap(
                 savedEntry -> savedEntry.key(),

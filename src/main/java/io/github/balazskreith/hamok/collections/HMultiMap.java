@@ -6,11 +6,11 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public class VMultiMap<K, V> {
+public class HMultiMap<K, V> {
 
 	private final Storage<K, Set<V>> storage;
 
-	public VMultiMap(Storage<K, Set<V>> storage) {
+	public HMultiMap(Storage<K, Set<V>> storage) {
 		this.storage = storage;
 	}
 

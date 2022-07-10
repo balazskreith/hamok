@@ -1,7 +1,7 @@
 package io.github.balazskreith.hamok.raccoons;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.raccoons.events.*;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,6 +12,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 class CandidateState extends AbstractState {
     private static final Logger logger = LoggerFactory.getLogger(CandidateState.class);
@@ -30,7 +31,6 @@ class CandidateState extends AbstractState {
         super(racoon);
         this.prevTimedOutElection = prevTimedOutElection;
         this.electionTerm = this.syncedProperties().currentTerm.get() + 1;
-        Schedulers.computation().scheduleDirect(this::start);
     }
 
 
@@ -40,8 +40,8 @@ class CandidateState extends AbstractState {
     }
 
     @Override
-    public Integer submit(byte[] entry) {
-        return null;
+    public boolean submit(Message entry) {
+        return false;
     }
 
     @Override
@@ -60,7 +60,7 @@ class CandidateState extends AbstractState {
             return;
         }
         if (response.term() < electionTerm) {
-            logger.info("{} A vote response from a term smaller than the current is received: {}", this.getLocalPeerId(), JsonUtils.objectToString(response));
+            logger.info("{} A vote response from a term smaller than the current is received: {}", this.getLocalPeerId(), response);
             return;
         }
         respondedRemotePeerIds.add(response.sourcePeerId());
@@ -70,7 +70,9 @@ class CandidateState extends AbstractState {
 
         int receivedVotes = this.receivedVotes.incrementAndGet();
         int numberOfPeerIds = this.remotePeers().size() + 1; // +1, because of a local racoon!
-        logger.info("{} Received vote for leadership: {}, number of peers: {}. a: {} ina: {}", this.getLocalPeerId(), receivedVotes, numberOfPeerIds, JsonUtils.objectToString(remotePeers().getActiveRemotePeerIds()), JsonUtils.objectToString(remotePeers().getInActiveRemotePeerIds()));
+        logger.info("{} Received vote for leadership: {}, number of peers: {}. a: {} ina: {}", this.getLocalPeerId(), receivedVotes, numberOfPeerIds,
+                String.join(",", remotePeers().getActiveRemotePeerIds().stream().map(Object::toString).collect(Collectors.toList())),
+                String.join(",", remotePeers().getInActiveRemotePeerIds().stream().map(Object::toString).collect(Collectors.toList())));
         if (numberOfPeerIds < receivedVotes * 2) {
             this.wonTheElection = true;
         }
@@ -106,6 +108,7 @@ class CandidateState extends AbstractState {
         var config = this.config();
         var elapsedTimeInMs = Instant.now().toEpochMilli() - this.started;
         if (this.wonTheElection) {
+            logger.info("{} Won the election", this.getLocalPeerId());
             this.lead();
             return;
         }
@@ -129,21 +132,23 @@ class CandidateState extends AbstractState {
 
     }
 
-    private void start() {
-        var config = this.config();
-        var props = this.syncedProperties();
-        var logs = this.logs();
-        var remotePeers = this.remotePeers();
-        for (var peerId : remotePeers.getActiveRemotePeerIds() ) {
-            var request = new RaftVoteRequest(
-                    peerId,
-                    this.electionTerm,
-                    config.id(),
-                    logs.getNextIndex() - 1,
-                    props.currentTerm.get()
-            );
-            this.sendVoteRequest(request);
-        }
-        this.started = Instant.now().toEpochMilli();
+    void start() {
+        Schedulers.computation().scheduleDirect(() -> {
+            var config = this.config();
+            var props = this.syncedProperties();
+            var logs = this.logs();
+            var remotePeers = this.remotePeers();
+            for (var peerId : remotePeers.getActiveRemotePeerIds() ) {
+                var request = new RaftVoteRequest(
+                        peerId,
+                        this.electionTerm,
+                        config.id(),
+                        logs.getNextIndex() - 1,
+                        props.currentTerm.get()
+                );
+                this.sendVoteRequest(request);
+            }
+            this.started = Instant.now().toEpochMilli();
+        });
     }
 }

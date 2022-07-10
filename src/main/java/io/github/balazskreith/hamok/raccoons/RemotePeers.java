@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -22,7 +23,8 @@ public class RemotePeers {
     private final Map<UUID, RemotePeer> remotePeers = new ConcurrentHashMap<>();
     private final AtomicReference<Set<UUID>> activeRemotePeerIds = new AtomicReference<>(Collections.emptySet());
     private final AtomicReference<Set<UUID>> inactiveRemotePeerIds = new AtomicReference<>(Collections.emptySet());
-
+    private final Random random = new Random();
+    private final AtomicInteger hashCode = new AtomicInteger(random.nextInt());
     void reset() {
         this.remotePeers.clear();
         this.updateRemotePeerIds();
@@ -78,6 +80,7 @@ public class RemotePeers {
                 true,
                 Instant.now().toEpochMilli()
         ));
+        this.hashCode.set(this.hashCode.get() + this.random.nextInt());
     }
 
     public Observable<UUID> detachedRemoteEndpointIds() {
@@ -98,12 +101,7 @@ public class RemotePeers {
 
     @Override
     public int hashCode() {
-        var hashCode = this.remotePeers.values().stream()
-                .map(r -> (r.id().hashCode() * (r.active() ? 31 : 63)) ^ ((r.touched() != null) ? r.touched().hashCode() : 0))
-                .reduce((p,a) -> (p * a));
-        if (hashCode.isEmpty()) return 0;
-        return hashCode.get().intValue();
-
+        return this.hashCode.get();
     }
 
     public int size() {
@@ -128,7 +126,7 @@ public class RemotePeers {
                 .filter(r -> r.active() == false)
                 .map(RemotePeer::id)
                 .collect(Collectors.toSet());
-
+        this.hashCode.set(this.hashCode.get() + this.random.nextInt());
         this.activeRemotePeerIds.set(activeRemotePeerIds);
         this.inactiveRemotePeerIds.set(inactiveRemotePeerIds);
     }

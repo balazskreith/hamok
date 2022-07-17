@@ -40,7 +40,7 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 	public void clear() {
 		var entries = this.rwLock.supplyInReadLock(this.map::entrySet);
 		this.rwLock.runInWriteLock(this.map::clear);
-		entries.stream().map(entry -> StorageEvent.makeDeletedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
+		entries.stream().map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
 	}
 
 	/**
@@ -150,28 +150,6 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 		});
 	}
 
-	@Override
-	public void evict(K key) {
-		var oldValue = this.rwLock.supplyInWriteLock(() -> this.map.remove(key));
-		if (oldValue == null) {
-			return;
-		}
-		var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
-		this.eventDispatcher.accept(event);
-	}
-
-	@Override
-	public void evictAll(Set<K> keys) {
-		this.rwLock.runInWriteLock(() -> {
-			for (var it = keys.iterator(); it.hasNext(); ) {
-				var key = it.next();
-				var value = this.map.remove(key);
-				if (value == null) continue;
-				var event = StorageEvent.makeEvictedEntryEvent(this.id, key, value);
-				this.eventDispatcher.accept(event);
-			}
-		});
-	}
 
 	@Override
 	public Iterator<StorageEntry<K, V>> iterator() {

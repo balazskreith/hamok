@@ -38,7 +38,6 @@ public class StorageEndpoint<K, V> implements Disposable {
     private final Subject<Message> insertEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> updateEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> deleteEntriesNotificationSubject = PublishSubject.create();
-    private final Subject<Message> evictEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> getSizeRequestSubject = PublishSubject.create();
     private final Subject<Message> getKeysRequestSubject = PublishSubject.create();
     private final Subject<Message> clearEntriesNotificationSubject = PublishSubject.create();
@@ -59,7 +58,6 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .addSubject(this.updateEntriesRequestSubject)
                 .addSubject(this.deleteEntriesNotificationSubject)
                 .addSubject(this.updateEntriesRequestSubject)
-                .addSubject(this.evictEntriesNotificationSubject)
                 .addSubject(this.insertEntriesRequestSubject)
                 .addSubject(this.getSizeRequestSubject)
                 .addSubject(this.getKeysRequestSubject)
@@ -97,7 +95,6 @@ public class StorageEndpoint<K, V> implements Disposable {
             case INSERT_ENTRIES_REQUEST -> this.insertEntriesRequestSubject.onNext(message);
             case DELETE_ENTRIES_REQUEST -> this.deleteEntriesRequestSubject.onNext(message);
             case DELETE_ENTRIES_NOTIFICATION -> this.deleteEntriesNotificationSubject.onNext(message);
-            case EVICT_ENTRIES_NOTIFICATION -> this.evictEntriesNotificationSubject.onNext(message);
             case GET_SIZE_REQUEST -> this.getSizeRequestSubject.onNext(message);
             case GET_KEYS_REQUEST -> this.getKeysRequestSubject.onNext(message);
             case CLEAR_ENTRIES_NOTIFICATION -> this.clearEntriesNotificationSubject.onNext(message);
@@ -118,13 +115,6 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .map(this.messageSerDe::deserializeDeleteEntriesRequest)
                 .subscribe(listener)
         );
-        return this;
-    }
-
-    public StorageEndpoint<K, V> onEvictedEntriesNotification(Consumer<EvictEntriesNotification<K>> listener) {
-        this.evictEntriesNotificationSubject
-                .map(this.messageSerDe::deserializeEvictEntriesNotification)
-                .subscribe(listener);
         return this;
     }
 
@@ -263,7 +253,6 @@ public class StorageEndpoint<K, V> implements Disposable {
         var result = depot.get();
         logger.debug("{} collected responses: {}, depot: {}", this.getLocalEndpointId(), JsonUtils.objectToString(responses), JsonUtils.objectToString(depot.get()));
         return result;
-//        return depot.get();
     }
 
     public void sendGetEntriesResponse(GetEntriesResponse<K, V> response) {
@@ -373,12 +362,6 @@ public class StorageEndpoint<K, V> implements Disposable {
         var message = this.messageSerDe.serializeUpdateEntriesResponse(response);
         this.send(message);
     }
-
-    public void sendEvictedEntriesNotification(EvictEntriesNotification<K> notification) {
-        var message = this.messageSerDe.serializeEvictEntriesNotification(notification);
-        this.send(message);
-    }
-
 
     private void processResponse(Message message) {
         if (message.requestId == null) {

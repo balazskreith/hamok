@@ -52,6 +52,6 @@ public interface BackupStorage<K, V> extends AutoCloseable {
      * Measurements and state snapshot representing the underlying backup storage
      * @return
      */
-    BackupMetrics metrics();
+    BackupStats metrics();
 
 }

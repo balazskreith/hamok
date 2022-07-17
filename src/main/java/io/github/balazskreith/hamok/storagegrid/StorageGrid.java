@@ -20,7 +20,6 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class StorageGrid implements Disposable {
     private static final Logger logger = LoggerFactory.getLogger(StorageGrid.class);
@@ -29,23 +28,17 @@ public class StorageGrid implements Disposable {
         return new StorageGridBuilder();
     }
 
-    private AtomicBoolean joined = new AtomicBoolean(false);
-
     private final Map<UUID, CompletableFuture<Message>> pendingRequests = new ConcurrentHashMap<>();
-    private final Map<String, CorrespondedStorage> storages = new ConcurrentHashMap<>();
+    private final Map<String, DistributedStorageOperations> storageOperations = new ConcurrentHashMap<>();
     private final GridOpSerDe gridOpSerDe = new GridOpSerDe();
     private final Subject<byte[]> sender = PublishSubject.<byte[]>create().toSerialized();
     private final Subject<byte[]> receiver = PublishSubject.<byte[]>create().toSerialized();
 
-
     private final Codec<Message, byte[]> messageCodec;
     private final Disposer disposer;
     private final StorageGridConfig config;
-//    private final RxCollector<byte[]> sender;
-//    private final RxEmitter<byte[]> receiver;
+    private final StorageGridMetrics metrics = new StorageGridMetrics();
 
-    //    private final RxRaft raft;
-//    private final Discovery discovery;
     private final Raccoon raccoon;
     private final String context;
     private final StorageGridTransport transport;
@@ -136,7 +129,7 @@ public class StorageGrid implements Disposable {
                     // it should not be replied to a previous request
                     // therefore the request is responded by one and only one member of the grid, the leader
                     var message = this.messageCodec.decode(logEntry.entry());
-                    if (this.getLocalEndpointId() == this.getLeaderId()) {
+                    if (UuidTools.equals(this.getLocalEndpointId(), this.getLeaderId())) {
                         this.dispatch(message);
                         return;
                     }
@@ -166,17 +159,12 @@ public class StorageGrid implements Disposable {
                             var entry = it.next();
                             var storageId = entry.getKey();
                             var updateNotification = entry.getValue();
-                            var boundStorage = this.storages.get(storageId);
-                            if (boundStorage == null) {
+                            var storageOperations = this.storageOperations.get(storageId);
+                            if (storageOperations == null) {
                                 logger.warn("{} Not found storage for storageSync response {}", this.context, storageId);
                                 continue;
                             }
-                            var storage = boundStorage.storage();
-                            if (storage == null) {
-                                logger.warn("{} Storage with id {} not found for sync", this.context, storageId);
-                                continue;
-                            }
-                            if (storage.getClass().getSimpleName().equals(ReplicatedStorage.class.getSimpleName())) {
+                            if (storageOperations.getStorageClassSimpleName().equals(ReplicatedStorage.class.getSimpleName())) {
                                 Message updateNotificationMessage = null;
                                 try {
                                     updateNotificationMessage = this.messageCodec.decode(updateNotification);
@@ -185,10 +173,9 @@ public class StorageGrid implements Disposable {
                                     continue;
                                 }
                                 // Let's Rock
-                                var keys = storage.keys();
-                                storage.evictAll(keys);
+                                storageOperations.storageLocalClear();
                                 this.dispatch(updateNotificationMessage);
-                                logger.info("{} Storage {} is synchronized with the leader.", this.context, storage.getId());
+                                logger.info("{} Storage {} is synchronized with the leader.", this.context, storageOperations.getStorageId());
                             }
                         }
                         this.raccoon.setCommitIndex(response.commitIndex());
@@ -250,16 +237,11 @@ public class StorageGrid implements Disposable {
                 }
                 Map<String, byte[]> storageUpdateNotifications = new HashMap<>();
                 int savedCommitIndex = this.raccoon.getCommitIndex();
-                for (var it = this.storages.values().iterator(); it.hasNext(); ) {
-                    var boundStorage = it.next();
-                    var storage = boundStorage.storage();
-                    if (storage == null) continue; // not ready
-                    if (storage.getClass().getSimpleName().equals(ReplicatedStorage.class.getSimpleName())) {
-                        var keys = storage.keys();
-                        var entries = storage.getAll(keys);
-                        StorageEndpoint endpoint = (StorageEndpoint) boundStorage.endpoints().stream().findFirst().get();
-                        var updateNotification = new UpdateEntriesNotification(entries, this.getLocalEndpointId(), request.sourceEndpointId());
-                        var updateNotificationMessage = endpoint.messageSerDe.serializeUpdateEntriesNotification(updateNotification);
+                for (var it = this.storageOperations.values().iterator(); it.hasNext(); ) {
+                    var storageOperations = it.next();
+                    if (storageOperations == null) continue; // not ready
+                    if (storageOperations.getStorageClassSimpleName().equals(ReplicatedStorage.class.getSimpleName())) {
+                        var updateNotificationMessage = storageOperations.getAllKeysUpdateNotification(request.sourceEndpointId());
                         byte[] storageEndpointNotification;
                         try {
                             storageEndpointNotification = this.messageCodec.encode(updateNotificationMessage);
@@ -267,7 +249,7 @@ public class StorageGrid implements Disposable {
                             logger.warn("{} ({}) Error while serializing message", this.getLocalEndpointId(), this.context, e);
                             continue;
                         }
-                        storageUpdateNotifications.put(storage.getId(), storageEndpointNotification);
+                        storageUpdateNotifications.put(storageOperations.getStorageId(), storageEndpointNotification);
                     }
                 }
 
@@ -324,66 +306,64 @@ public class StorageGrid implements Disposable {
                     logger.warn("{} No StorageId is defined for message {}", this.context, JsonUtils.objectToString(message));
                     return;
                 }
-                CorrespondedStorage correspondedStorage = this.storages.get(storageId);
-                if (correspondedStorage == null) {
+                var storageOperations = this.storageOperations.get(storageId);
+                if (storageOperations == null) {
                     logger.warn("{} No message acceptor for storage {}. Message: {}", this.context, storageId, JsonUtils.objectToString(message));
                     return;
                 }
-                List<StorageEndpoint> endpoints = correspondedStorage.endpoints();
-                endpoints.forEach(endpoint -> endpoint.receive(message));
+                storageOperations.accept(message);
             }
         }
     }
 
     public <K, V> SeparatedStorageBuilder<K, V> separatedStorage() {
         var storageGrid = this;
+        var operationsBuilder = DistributedStorageOperations.<K, V>builder();
         return new SeparatedStorageBuilder<K, V>()
                 .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
                 .setStorageGrid(storageGrid)
                 .onEndpointBuilt(storageEndpoint -> {
-                    this.addMessageAcceptor(storageEndpoint.getStorageId(), storageEndpoint);
+                    operationsBuilder.withEndpoint(storageEndpoint);
                 })
                 .onStorageBuilt(storage -> {
-                    var updatedBoundStorage = this.storages.getOrDefault(storage.getId(), CorrespondedStorage.createEmpty())
-                            .setStorage(storage);
-                    this.storages.put(storage.getId(), updatedBoundStorage);
+                    var operations = operationsBuilder.withStorage(storage).build();
+                    this.storageOperations.put(storage.getId(), operations);
                     storage.events().closingStorage()
-                            .firstElement().subscribe(this.storages::remove);
+                            .firstElement().subscribe(this.storageOperations::remove);
                 })
                 ;
     }
 
     public <K, V> FederatedStorageBuilder<K, V> federatedStorage() {
         var storageGrid = this;
+        var operationsBuilder = DistributedStorageOperations.<K, V>builder();
         return new FederatedStorageBuilder<K, V>()
                 .setStorageGrid(storageGrid)
                 .onEndpointBuilt(storageEndpoint -> {
-//                    logger.info("Adding message acceptor for endpoint: {} ", storageEndpoint);
-                    this.addMessageAcceptor(storageEndpoint.getStorageId(), storageEndpoint);
+                    operationsBuilder.withEndpoint(storageEndpoint);
                 })
                 .onStorageBuilt(storage -> {
-                    var updatedBoundStorage = this.storages.getOrDefault(storage.getId(), CorrespondedStorage.createEmpty())
-                            .setStorage(storage);
-                    this.storages.put(storage.getId(), updatedBoundStorage);
+                    var operations = operationsBuilder.withStorage(storage).build();
+                    this.storageOperations.put(storage.getId(), operations);
                     storage.events().closingStorage()
-                            .firstElement().subscribe(this.storages::remove);
+                            .firstElement().subscribe(this.storageOperations::remove);
                 })
                 ;
     }
 
     public <K, V> ReplicatedStorageBuilder<K, V> replicatedStorage() {
         var storageGrid = this;
+        var operationsBuilder = DistributedStorageOperations.<K, V>builder();
         return new ReplicatedStorageBuilder<K, V>()
                 .setStorageGrid(storageGrid)
                 .onEndpointBuilt(storageEndpoint -> {
-                    this.addMessageAcceptor(storageEndpoint.getStorageId(), storageEndpoint);
+                    operationsBuilder.withEndpoint(storageEndpoint);
                 })
                 .onStorageBuilt(storage -> {
-                    var updatedBoundStorage = this.storages.getOrDefault(storage.getId(), CorrespondedStorage.createEmpty())
-                            .setStorage(storage);
-                    this.storages.put(storage.getId(), updatedBoundStorage);
+                    operationsBuilder.withStorage(storage);
+                    this.storageOperations.put(storage.getId(), operationsBuilder.build());
                     storage.events().closingStorage()
-                            .firstElement().subscribe(this.storages::remove);
+                            .firstElement().subscribe(this.storageOperations::remove);
                 })
                 ;
     }
@@ -499,13 +479,6 @@ public class StorageGrid implements Disposable {
 
     UUID getLocalEndpointId() {
         return this.raccoon.getId();
-    }
-
-    private void addMessageAcceptor(String storageId, StorageEndpoint endpoint) {
-        var updatedBindableStorage = this.storages
-                .getOrDefault(storageId, CorrespondedStorage.createEmpty())
-                .addEndpoint(endpoint);
-        this.storages.put(storageId, updatedBindableStorage);
     }
 
     @Override

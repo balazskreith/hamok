@@ -100,10 +100,6 @@ public enum MessageType {
      * Notification about deleting
      */
     DELETE_ENTRIES_NOTIFICATION,
-    /**
-     * Evict entries
-     */
-    EVICT_ENTRIES_NOTIFICATION,
 
     /**
      * Clear entries notification

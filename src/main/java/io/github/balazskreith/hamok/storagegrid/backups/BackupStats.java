@@ -5,7 +5,7 @@ package io.github.balazskreith.hamok.storagegrid.backups;
  * @param storedEntries The number of entries saved locally in the backup storage
  * @param savedEntries The number of entries saved on remote endpoint backup storage
  */
-public record BackupMetrics(
+public record BackupStats(
         String storageId,
         int storedEntries,
         int savedEntries

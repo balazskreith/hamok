@@ -7,7 +7,6 @@ import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
-import io.github.balazskreith.hamok.storagegrid.messages.EvictEntriesNotification;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +22,7 @@ import java.util.stream.Collectors;
  * @param <K>
  * @param <V>
  */
-public class SeparatedStorage<K, V> implements Storage<K, V> {
+public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(SeparatedStorage.class);
     static final String PROTOCOL_NAME = "separated-storage";
 
@@ -89,11 +88,8 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
                 var savedEntries = this.backupStorage.extract(remoteEndpointId);
                 this.storage.setAll(savedEntries);
             }).onLocalEndpointReset(payload -> {
-                // we evict all keys from the local storage (it will not send an
-                // a notification to the remote endpoints, because the direct access of the local storage
-                // but it will send an event to the backup which evict all entries without saving it on another backup
-                var keys = this.storage.keys();
-                this.storage.evictAll(keys);
+//                var keys = this.storage.keys();
+//                this.storage.evictAll(keys);
             });
 
         var collectedEvents = this.storage.events()
@@ -278,20 +274,6 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
         return SetUtils.combineAll(localDeletedKeys, remoteDeletedKeys);
     }
 
-    @Override
-    public void evict(K key) {
-        this.evictAll(Set.of(key));
-    }
-
-    @Override
-    public void evictAll(Set<K> keys) {
-        if (keys.size() < 1) {
-            return;
-        }
-        this.storage.evictAll(keys);
-        var notification = new EvictEntriesNotification<K>(keys, null, null);
-        this.endpoint.sendEvictedEntriesNotification(notification);
-    }
 
     @Override
     public boolean isEmpty() {
@@ -323,5 +305,30 @@ public class SeparatedStorage<K, V> implements Storage<K, V> {
         this.storage.close();
         this.backupStorage.close();
         this.disposer.dispose();
+    }
+
+    @Override
+    public boolean localIsEmpty() {
+        return this.storage.isEmpty();
+    }
+
+    @Override
+    public int localSize() {
+        return this.storage.size();
+    }
+
+    @Override
+    public Set<K> localKeys() {
+        return this.storage.keys();
+    }
+
+    @Override
+    public Iterator<StorageEntry<K, V>> localIterator() {
+        return this.storage.iterator();
+    }
+
+    @Override
+    public void localClear() {
+        this.storage.clear();
     }
 }

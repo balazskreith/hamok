@@ -130,24 +130,6 @@ class FederatedStorageLocalSpecTest {
     }
 
     @Test
-    void shouldEvict() {
-        this.storage.set("one", 1);
-        this.storage.evict("one");
-
-        Assertions.assertNull(this.storage.get("one"));
-        Assertions.assertTrue(this.storage.localIsEmpty());
-    }
-
-    @Test
-    void shouldEvictAll() {
-        this.storage.set("one", 1);
-        this.storage.evictAll(Set.of("one"));
-
-        Assertions.assertNull(this.storage.get("one"));
-        Assertions.assertTrue(this.storage.localIsEmpty());
-    }
-
-    @Test
     void shouldHaveAllKeys() {
         this.storage.set("one", 1);
         var keys = this.storage.keys();

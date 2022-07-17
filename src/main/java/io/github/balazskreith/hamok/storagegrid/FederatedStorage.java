@@ -58,8 +58,6 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 var deletedKeys = this.storage.deleteAll(request.keys());
                 var response = request.createResponse(deletedKeys);
                 this.endpoint.sendDeleteEntriesResponse(response);
-            }).onEvictedEntriesNotification(request -> {
-                this.storage.evictAll(request.keys());
             }).onUpdateEntriesNotification(notification -> {
                 var entries = notification.entries();
 
@@ -76,7 +74,6 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 }
             }).onUpdateEntriesRequest(request -> {
                 var entries = request.entries();
-
                 // only update entries what we have!
                 var oldEntries = this.storage.getAll(entries.keySet());
                 var updatedEntries = entries.entrySet().stream()
@@ -103,6 +100,10 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                         this.storage.keys()
                 );
                 this.endpoint.sendGetKeysResponse(response);
+            }).onClearEntriesNotification(notification -> {
+                var keys = this.storage.keys();
+                this.storage.clear();
+                this.backupStorage.delete(keys);
             }).onRemoteEndpointJoined(remoteEndpointId -> {
 
             }).onRemoteEndpointDetached(remoteEndpointId -> {
@@ -124,14 +125,12 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 );
                 this.storage.setAll(updatedEntries);
             }).onLocalEndpointReset(payload -> {
-                // at this point we know that this endpoint became inactive, and it is reinstated now.
-                // we need to evict all items from the storage and all stored items from the backup
-                var keys = this.storage.keys();
-                this.storage.evictAll(keys);
+                var evictedEntries = this.storage.size();
+                this.storage.clear();
                 var backupMetrics = this.backupStorage.metrics();
                 this.backupStorage.clear();
                 logger.info("{} Reset Storage {}. Evicted storage entries: {}, Deleted backup entries: {}",
-                        this.endpoint.getLocalEndpointId(), this.storage.getId(), keys.size(), backupMetrics.storedEntries());
+                        this.endpoint.getLocalEndpointId(), this.storage.getId(), evictedEntries, backupMetrics.storedEntries());
             });
 
         var collectedEvents = this.storage.events()
@@ -171,8 +170,7 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                     this.backupStorage.delete(keys);
                 }))
                 .addDisposable(collectedEvents.evictedEntries().subscribe(modifiedStorageEntries -> {
-                    // evicted items from the local storage is a special case in distributed storages
-                    // evict only dispose locally stored items without sending any notification or request.
+                    // evicted items from local storage happens when clear is called.
                 }))
                 .build();
     }
@@ -250,18 +248,6 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
         return this.storage.deleteAll(keys);
     }
 
-    @Override
-    public void evict(K key) {
-        this.evictAll(Set.of(key));
-    }
-
-    @Override
-    public void evictAll(Set<K> keys) {
-        if (keys.size() < 1) {
-            return;
-        }
-        this.storage.evictAll(keys);
-    }
 
     @Override
     public boolean isEmpty() {
@@ -273,9 +259,9 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public void clear() {
-        var notification = new ClearEntriesNotification();
-        this.endpoint.sendClearEntriesNotification(notification);
         this.storage.clear();
+        var notification = new ClearEntriesNotification(this.endpoint.getLocalEndpointId());
+        this.endpoint.sendClearEntriesNotification(notification);
     }
 
     @Override
@@ -319,5 +305,10 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
     @Override
     public Iterator<StorageEntry<K, V>> localIterator() {
         return this.storage.iterator();
+    }
+
+    @Override
+    public void localClear() {
+        this.storage.clear();
     }
 }

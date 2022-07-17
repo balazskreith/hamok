@@ -16,7 +16,7 @@ import java.util.*;
  * @param <K>
  * @param <V>
  */
-public class ReplicatedStorage<K, V> implements Storage<K, V> {
+public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(ReplicatedStorage.class);
     static final String PROTOCOL_NAME = "replicated-storage";
 
@@ -43,9 +43,6 @@ public class ReplicatedStorage<K, V> implements Storage<K, V> {
                 var deletedKeys = this.storage.deleteAll(request.keys());
                 var response = request.createResponse(deletedKeys);
                 this.endpoint.sendDeleteEntriesResponse(response);
-            }).onEvictedEntriesNotification(request -> {
-                // only for local eviction
-                this.storage.evictAll(request.keys());
             }).onUpdateEntriesNotification(notification -> {
                 // only follower should do this
 
@@ -145,18 +142,6 @@ public class ReplicatedStorage<K, V> implements Storage<K, V> {
         return this.endpoint.submitRequestDeleteEntries(keys);
     }
 
-    @Override
-    public void evict(K key) {
-        this.evictAll(Set.of(key));
-    }
-
-    @Override
-    public void evictAll(Set<K> keys) {
-        if (keys.size() < 1) {
-            return;
-        }
-        this.storage.evictAll(keys);
-    }
 
     /**
      *
@@ -198,5 +183,30 @@ public class ReplicatedStorage<K, V> implements Storage<K, V> {
         if (!this.disposer.isDisposed()) {
             this.disposer.dispose();
         }
+    }
+
+    @Override
+    public boolean localIsEmpty() {
+        return this.storage.isEmpty();
+    }
+
+    @Override
+    public int localSize() {
+        return this.storage.size();
+    }
+
+    @Override
+    public Set<K> localKeys() {
+        return this.storage.keys();
+    }
+
+    @Override
+    public Iterator<StorageEntry<K, V>> localIterator() {
+        return this.storage.iterator();
+    }
+
+    @Override
+    public void localClear() {
+        this.storage.clear();
     }
 }

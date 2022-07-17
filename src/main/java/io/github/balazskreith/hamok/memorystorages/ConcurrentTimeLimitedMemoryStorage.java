@@ -69,7 +69,7 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 		this.rwLock.runInWriteLock(() -> {
 			var entries = Set.copyOf(this.map.entrySet());
 			this.map.clear();
-			entries.stream().map(entry -> StorageEvent.makeDeletedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
+			entries.stream().map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
 		});
 	}
 
@@ -161,31 +161,6 @@ public class ConcurrentTimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 		});
 	}
 
-	@Override
-	public void evict(K key) {
-		this.rwLock.runInWriteLock(() -> {
-			var oldValue =  this.map.remove(key);
-			if (oldValue == null) {
-				return;
-			}
-			var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
-			this.eventDispatcher.accept(event);
-		});
-	}
-
-	@Override
-	public void evictAll(Set<K> keys) {
-		this.rwLock.runInWriteLock(() -> {
-			for (var key : keys) {
-				var oldValue =  this.map.remove(key);
-				if (oldValue == null) {
-					return;
-				}
-				var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
-				this.eventDispatcher.accept(event);
-			}
-		});
-	}
 
 	@Override
 	public Iterator<StorageEntry<K, V>> iterator() {

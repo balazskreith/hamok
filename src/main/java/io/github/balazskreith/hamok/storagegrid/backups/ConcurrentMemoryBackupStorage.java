@@ -180,8 +180,8 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
     }
 
     @Override
-    public BackupMetrics metrics() {
-        return  new BackupMetrics(
+    public BackupStats metrics() {
+        return  new BackupStats(
                 this.endpoint.getStorageId(),
                 this.storedEntries.size(),
                 this.savedEntries.size()

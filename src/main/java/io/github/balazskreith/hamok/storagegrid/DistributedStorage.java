@@ -10,6 +10,6 @@ public interface DistributedStorage<K, V> extends Storage<K, V> {
     boolean localIsEmpty();
     int localSize();
     Set<K> localKeys();
-//    void localClear();
     Iterator<StorageEntry<K, V>> localIterator();
+    void localClear();
 }

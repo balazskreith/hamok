@@ -48,7 +48,7 @@ public class TimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 	public void clear() {
 		var entries = Set.copyOf(this.map.entrySet());
 		this.map.clear();
-		entries.stream().map(entry -> StorageEvent.makeDeletedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
+		entries.stream().map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
 	}
 
 	@Override
@@ -132,28 +132,6 @@ public class TimeLimitedMemoryStorage<K, V> implements Storage<K, V> {
 		return keys.stream().filter(this::delete).collect(Collectors.toSet());
 	}
 
-	@Override
-	public void evict(K key) {
-		var oldValue =  this.map.remove(key);
-		if (oldValue == null) {
-			return;
-		}
-		var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
-		this.eventDispatcher.accept(event);
-	}
-
-	@Override
-	public void evictAll(Set<K> keys) {
-		for (var it = keys.iterator(); it.hasNext(); ) {
-			var key = it.next();
-			var oldValue =  this.map.remove(key);
-			if (oldValue == null) {
-				return;
-			}
-			var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
-			this.eventDispatcher.accept(event);
-		}
-	}
 
 	@Override
 	public Iterator<StorageEntry<K, V>> iterator() {

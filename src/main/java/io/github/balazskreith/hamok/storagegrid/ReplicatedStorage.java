@@ -28,8 +28,10 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
     private final Storage<K, V> storage;
     private final CompositeDisposable disposer;
     private volatile boolean standalone;
+    private final ReplicatedStorageConfig config;
 
-    ReplicatedStorage(Storage<K, V> storage, StorageEndpoint<K, V> endpoint) {
+    ReplicatedStorage(Storage<K, V> storage, StorageEndpoint<K, V> endpoint, ReplicatedStorageConfig config) {
+        this.config = config;
         this.storage = storage;
         this.standalone = endpoint.getRemoteEndpointIds().size() < 1;
         this.endpoint = endpoint

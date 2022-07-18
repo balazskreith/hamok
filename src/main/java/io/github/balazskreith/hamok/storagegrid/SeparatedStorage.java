@@ -33,13 +33,16 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
     private StorageEndpoint<K, V> endpoint;
     private final Storage<K, V> storage;
     private final BackupStorage<K, V> backupStorage;
+    private final SeparatedStorageConfig config;
     private final Disposer disposer;
 
     SeparatedStorage(
             Storage<K, V> storage,
             StorageEndpoint<K, V> endpoint,
-            BackupStorage<K, V> backupStorage
+            BackupStorage<K, V> backupStorage,
+            SeparatedStorageConfig config
     ) {
+        this.config = config;
         this.backupStorage = backupStorage;
         this.storage = storage;
         this.endpoint = endpoint
@@ -88,12 +91,16 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 var savedEntries = this.backupStorage.extract(remoteEndpointId);
                 this.storage.setAll(savedEntries);
             }).onLocalEndpointReset(payload -> {
-//                var keys = this.storage.keys();
-//                this.storage.evictAll(keys);
-            });
+                var evictedEntries = this.storage.size();
+                this.storage.clear();
+                var backupMetrics = this.backupStorage.metrics();
+                this.backupStorage.clear();
+                logger.info("{} Reset Storage {}. Evicted storage entries: {}, Deleted backup entries: {}",
+                        this.endpoint.getLocalEndpointId(), this.storage.getId(), evictedEntries, backupMetrics.storedEntries());
+                });
 
         var collectedEvents = this.storage.events()
-                .collectOn(Schedulers.io(), 100, 1000);
+                .collectOn(Schedulers.io(), this.config.maxCollectedActualStorageTimeInMs(), this.config.maxCollectedActualStorageEvents());
         this.disposer = Disposer.builder()
                 .addDisposable(collectedEvents.createdEntries().subscribe(modifiedStorageEntries -> {
                     var entries = modifiedStorageEntries.stream().collect(Collectors.toMap(

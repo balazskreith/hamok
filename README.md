@@ -3,8 +3,7 @@
 
 Hamok
 ---
-
-Light and convenient library to create a simple storage grid.
+Light and convenient library to create a distributed in-memory object storage grid for java.
 
 ## Quick Start
 ```java
@@ -28,6 +27,8 @@ Where `server_1` and `server_2` are created in two different server instances, a
 
 ## Table of Contents
 * []()
+
+## Concept
 
 ## Storages
 

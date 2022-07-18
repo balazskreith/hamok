@@ -137,6 +137,7 @@ public class GridOpSerDe {
         result.type = MessageType.SUBMIT_REQUEST.name();
         result.requestId = request.requestId();
         result.entries = List.of(base64Encoder.encodeToString(request.entry()));
+        result.destinationId = request.destinationId();
         return result;
     }
 
@@ -147,6 +148,7 @@ public class GridOpSerDe {
         }
         return new SubmitRequest(
                 message.requestId,
+                message.destinationId,
                 entry
         );
     }
@@ -172,6 +174,7 @@ public class GridOpSerDe {
         result.requestId = response.requestId();
         result.success = response.success();
         result.raftLeaderId = response.leaderId();
+        result.destinationId = response.destinationId();
         return result;
     }
 

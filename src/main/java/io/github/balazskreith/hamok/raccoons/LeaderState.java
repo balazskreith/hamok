@@ -18,9 +18,15 @@ class LeaderState extends AbstractState {
     ) {
         super(base);
         this.currentTerm = this.syncedProperties().currentTerm.incrementAndGet();
+    }
+
+    @Override
+    void start() {
+        logger.warn("CHECKPOINT 1");
         this.base.setActualLeaderId(this.config().id());
-        // send the append request immediately
+        logger.warn("CHECKPOINT 2");
         this.updateFollowers();
+        logger.warn("CHECKPOINT 3");
     }
 
     @Override
@@ -205,7 +211,7 @@ class LeaderState extends AbstractState {
                     logs.getCommitIndex(),
                     logs.getNextIndex()
             );
-//            logger.info("{} sending appendEntriesRequest {}", this.getId(), appendEntries);
+//            logger.info("{} sending appendEntriesRequest {}", this.getLocalPeerId(), appendEntries);
             this.sendAppendEntriesRequest(appendEntries);
         }
     }

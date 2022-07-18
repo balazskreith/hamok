@@ -24,7 +24,6 @@ class RaftLogsTest {
     private Raccoon leader;
     private Raccoon follower_1;
     private Raccoon follower_2;
-    private Raccoon stopped;
 
     @Test
     @Order(1)

@@ -9,6 +9,7 @@ import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
@@ -169,7 +170,7 @@ public class Raccoon implements Disposable, Closeable {
         return this.actualLeaderId.get();
     }
 
-    public Observable<Optional<UUID>> changedLeaderId() { return this.actualLeaderId; }
+    public Observable<Optional<UUID>> changedLeaderId() { return this.actualLeaderId.observeOn(Schedulers.computation()); }
 
     public Observable<RaftState> changedState() { return this.changedState; }
 
@@ -285,6 +286,6 @@ public class Raccoon implements Disposable, Closeable {
             this.changedState.onNext(successor.getState());
             logger.info("{} Changed state from {} to {}", this.getId(), state.getState(), successor.getState());
         }
-
+        successor.start();
     }
 }

@@ -68,6 +68,14 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .build();
     }
 
+    void init() {
+        this.disposer.add(this.grid.detachedRemoteEndpoints().subscribe(detachedEndpointId -> {
+            for (var pendingRequest : this.pendingRequests.values()) {
+                pendingRequest.removeEndpointId(detachedEndpointId);
+            }
+        }));
+    }
+
     public String getStorageId() {
         return this.storageId;
     }

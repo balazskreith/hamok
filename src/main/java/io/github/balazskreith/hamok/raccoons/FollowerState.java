@@ -36,6 +36,11 @@ class FollowerState extends AbstractState {
     }
 
     @Override
+    void start() {
+        // nothing we do here
+    }
+
+    @Override
     public Integer submit(byte[] entry) {
         return null;
     }
@@ -195,7 +200,7 @@ class FollowerState extends AbstractState {
                 remotePeers.detach(inactivePeerId);
             }
             if (resetRequest) {
-                logger.warn("Reset!");
+                logger.info("Reset is requested by a leader {} to this endpoint {} due to previous inactivity", notification.sourceEndpointId(), notification.destinationEndpointId());
                 this.inactivatedLocalPeerId();
             }
         }

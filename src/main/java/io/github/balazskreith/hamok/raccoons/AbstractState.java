@@ -27,6 +27,8 @@ abstract class AbstractState implements Runnable {
 
     public abstract Integer submit(byte[] bytes);
 
+    abstract void start();
+
     abstract void receiveVoteRequested(RaftVoteRequest request);
     abstract void receiveVoteResponse(RaftVoteResponse response);
     abstract void receiveRaftAppendEntriesRequest(RaftAppendEntriesRequest request);

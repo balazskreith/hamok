@@ -17,13 +17,13 @@ public class ReplicatedStorageBuilder<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(ReplicatedStorageBuilder.class);
 
     private final StorageEndpointBuilder<K, V> storageEndpointBuilder = new StorageEndpointBuilder<>();
-
+    private Consumer<StorageEndpoint<K, V>> storageEndpointBuiltListener = endpoint -> {};
+    private Consumer<ReplicatedStorage<K, V>> storageBuiltListener = storage -> {};
 
     private Supplier<Codec<K, String>> keyCodecSupplier;
     private Supplier<Codec<V, String>> valueCodecSupplier;
     private Storage<K, V> actualStorage;
-    private Consumer<StorageEndpoint<K, V>> storageEndpointBuiltListener = endpoint -> {};
-    private Consumer<ReplicatedStorage<K, V>> storageBuiltListener = storage -> {};
+    private String storageId = null;
 
     ReplicatedStorageBuilder() {
 
@@ -44,12 +44,8 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
-    ReplicatedStorageBuilder<K, V> setMapDepotProvider(Supplier<Depot<Map<K, V>>> depotProvider) {
-        this.storageEndpointBuilder.setMapDepotProvider(depotProvider);
-        return this;
-    }
-
     public ReplicatedStorageBuilder<K, V> setStorageId(String value) {
+        this.storageId = value;
         this.storageEndpointBuilder.setStorageId(value);
         return this;
     }
@@ -59,9 +55,13 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
-
     public ReplicatedStorageBuilder<K, V> setKeyCodecSupplier(Supplier<Codec<K, String>> value) {
         this.keyCodecSupplier = value;
+        return this;
+    }
+
+    ReplicatedStorageBuilder<K, V> setMapDepotProvider(Supplier<Depot<Map<K, V>>> depotProvider) {
+        this.storageEndpointBuilder.setMapDepotProvider(depotProvider);
         return this;
     }
 
@@ -70,9 +70,14 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
+
     public ReplicatedStorage<K, V> build() {
         Objects.requireNonNull(this.valueCodecSupplier, "Codec for values must be defined");
         Objects.requireNonNull(this.keyCodecSupplier, "Codec for keys must be defined");
+        Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
+        var config = new ReplicatedStorageConfig(
+                this.storageId
+        );
 
         var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
         var storageEndpoint = this.storageEndpointBuilder
@@ -84,12 +89,12 @@ public class ReplicatedStorageBuilder<K, V> {
             this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
                     .setId(storageEndpoint.getStorageId())
                     .build();
-            logger.info("Separated Storage {} is built by using concurrent memory storage", storageEndpoint.getStorageId());
+            logger.info("Federated Storage {} is built with Concurrent Memory Storage ", storageEndpoint.getStorageId());
         }
-        var result = new ReplicatedStorage<K, V>(this.actualStorage, storageEndpoint);
+
+        var result = new ReplicatedStorage<K, V>(this.actualStorage, storageEndpoint, config);
         this.storageBuiltListener.accept(result);
         return result;
 
     }
-
 }

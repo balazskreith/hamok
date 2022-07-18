@@ -44,7 +44,7 @@ public class PendingRequest implements Consumer<Message> {
         try {
             synchronized (this) {
                 var pendingBefore = this.pendingEndpointIds.size();
-                if (!this.pendingEndpointIds.remove(message.sourceId)) {
+                if (!this.pendingEndpointIds.remove(message.sourceId) && this.neededResponses < 1) {
                     logger.warn("Source endpoint {} is not found in pending ids of request {}", message.sourceId, message.requestId);
                     completed = pendingBefore == 0;
                 }

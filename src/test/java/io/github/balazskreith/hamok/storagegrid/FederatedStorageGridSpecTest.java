@@ -31,8 +31,8 @@ class FederatedStorageGridSpecTest {
 
     @Test
     @Order(1)
-    @DisplayName("When bcnStockpile connected to usEast, and nyStockpile connected to usEast are created Then they are empty")
-    void shouldBeEmpty() throws InterruptedException {
+    @DisplayName("Setup")
+    void test_1() throws InterruptedException {
         this.euWest = StorageGrid.builder()
                 .withContext("Eu West")
                 .withRaftMaxLogRetentionTimeInMs(30000)
@@ -77,13 +77,12 @@ class FederatedStorageGridSpecTest {
     }
 
     @Test
-    @Order(8)
+    @Order(2)
     @DisplayName("When Created it is empty")
-    void hasToBeImplemented_1() {
+    void test_2() {
         Assertions.assertTrue(bcnStockpile.isEmpty());
         Assertions.assertTrue(nyStockpile.isEmpty());
         Assertions.assertEquals(0, bcnStockpile.size());
         Assertions.assertEquals(0, nyStockpile.size());
-        throw new UnsupportedOperationException("Not implemented yet");
     }
 }

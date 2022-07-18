@@ -30,7 +30,6 @@ class CandidateState extends AbstractState {
         super(racoon);
         this.prevTimedOutElection = prevTimedOutElection;
         this.electionTerm = this.syncedProperties().currentTerm.get() + 1;
-        Schedulers.computation().scheduleDirect(this::start);
     }
 
 
@@ -106,6 +105,7 @@ class CandidateState extends AbstractState {
         var config = this.config();
         var elapsedTimeInMs = Instant.now().toEpochMilli() - this.started;
         if (this.wonTheElection) {
+            logger.info("{} Won the election", this.getLocalPeerId());
             this.lead();
             return;
         }
@@ -129,21 +129,23 @@ class CandidateState extends AbstractState {
 
     }
 
-    private void start() {
-        var config = this.config();
-        var props = this.syncedProperties();
-        var logs = this.logs();
-        var remotePeers = this.remotePeers();
-        for (var peerId : remotePeers.getActiveRemotePeerIds() ) {
-            var request = new RaftVoteRequest(
-                    peerId,
-                    this.electionTerm,
-                    config.id(),
-                    logs.getNextIndex() - 1,
-                    props.currentTerm.get()
-            );
-            this.sendVoteRequest(request);
-        }
-        this.started = Instant.now().toEpochMilli();
+    void start() {
+        Schedulers.computation().scheduleDirect(() -> {
+            var config = this.config();
+            var props = this.syncedProperties();
+            var logs = this.logs();
+            var remotePeers = this.remotePeers();
+            for (var peerId : remotePeers.getActiveRemotePeerIds() ) {
+                var request = new RaftVoteRequest(
+                        peerId,
+                        this.electionTerm,
+                        config.id(),
+                        logs.getNextIndex() - 1,
+                        props.currentTerm.get()
+                );
+                this.sendVoteRequest(request);
+            }
+            this.started = Instant.now().toEpochMilli();
+        });
     }
 }

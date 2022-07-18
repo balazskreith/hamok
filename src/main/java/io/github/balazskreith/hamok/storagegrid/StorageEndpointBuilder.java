@@ -45,6 +45,7 @@ public class StorageEndpointBuilder<U, R> {
         Objects.requireNonNull(this.result.storageId, "StorageId cannot be null");
         Objects.requireNonNull(this.result.grid, "storageGrid must be defined");
         Objects.requireNonNull(this.result.depotProvider, "Depot provider must be given");
+        this.result.init();
         try {
             return this.result;
         } finally {

@@ -41,8 +41,8 @@ class FollowerState extends AbstractState {
     }
 
     @Override
-    public Integer submit(byte[] entry) {
-        return null;
+    public boolean submit(byte[] entry) {
+        return false;
     }
 
     @Override
@@ -115,9 +115,15 @@ class FollowerState extends AbstractState {
         var logs = this.logs();
 
         // let's check if we are covered with the entries or not
+        logger.debug("{} next index: {}, request leader next index: {}, request entries size: {}",
+                this.getLocalPeerId(),
+                logs.getNextIndex(),
+                request.leaderNextIndex(),
+                request.entries().size()
+        );
         if (logs.getNextIndex() < request.leaderNextIndex() - request.entries().size()) {
             if (!this.syncRequested) {
-                logger.info("{} request a commit sync as the owned next index is {} and the leader next index is {}, and the provided number of entries ({}) insufficient to close the gap.",
+                logger.warn("{} request a commit sync as the owned next index is {} and the leader next index is {}, and the provided number of entries ({}) insufficient to close the gap.",
                         this.getLocalPeerId(),
                         logs.getNextIndex(),
                         request.leaderNextIndex(),

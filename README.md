@@ -30,19 +30,53 @@ Where `server_1` and `server_2` are created in two different server instances, a
 
 ## Concept
 
+Horizontal scalability becomes a standard requirement of designing any services today.
+Services store objects in the local-memory of the server instance they are running on, but they 
+often require sharing ephemeral objects with each other. 
+For example when two or more clients sending measurements to two server instances, 
+at some point one instance might need to query the number of total clients, 
+or the last measurement value of a specific client received by another instance.
+This can only be possible if the objects stored by the instances are shared. 
+The basic need to share objects between services should not require to add a database 
+or any additional dependency to your application. Here comes Hamok into the picture.
+
+Hamok is designed to be a lightweight, distributed object storage with minimal effort to create  
+and maximal flexibility to utilize. It includes the necessary logic to 
+embed the library and use shared object storages, meanwhile it relies on 
+the application developer to manage the cluster of the service.
+
 ## Storages
+
+Storages are key, value object maps in hamok, where each storage provides the following operations:
+insert, get, set, delete, clear.  
+
+The specific implementation of the storage differs based on the underlying representations.
 
 ### Built-in storages
 
-### Custom storages
+Before continuing with the storage grid it is important to take a look of the built-in storage types.
 
-## Storage Grid
+#### Memory Storage
 
-### Federated Storages
+#### Time limited memory storage
 
-### Separated Storages
+#### Concurrent Memory Storage
 
-### Replicated Storages
+#### Concurrent time limited memory storage
+
+#### Custom storage example
+
+## Storage grids
+
+Storage grids are the endpoints of members in hamok. A storage grid 
+provide transport to communicate with other members and builders to create different 
+type of distributed storages.
+
+### Federated Storage
+
+### Separated Storage
+
+### Replicated Storage
 
 ## Collections
 

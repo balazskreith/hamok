@@ -3,9 +3,7 @@ package io.github.balazskreith.hamok.storagegrid.messages;
 
 import io.github.balazskreith.hamok.raccoons.events.*;
 
-import java.util.Base64;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class GridOpSerDe {
@@ -192,21 +190,61 @@ public class GridOpSerDe {
         result.type = MessageType.STORAGE_SYNC_REQUEST.name();
         result.requestId = request.requestId();
         result.sourceId = request.sourceEndpointId();
+        result.destinationId = request.leaderId();
         return result;
     }
 
     public StorageSyncRequest deserializeStorageSyncRequest(Message request) {
         return new StorageSyncRequest(
                 request.requestId,
-                request.sourceId
+                request.sourceId,
+                request.destinationId
         );
     }
 
     public StorageSyncResponse deserializeStorageSyncResponse(Message message) {
-        return null;
+        var storageUpdateNotifications = new HashMap<String, byte[]>();
+        if (message.keys != null && message.values != null) {
+            var length = Math.min(message.keys.size(), message.values.size());
+            for (int i = 0; i < length; ++i) {
+                var storageId = message.keys.get(i);
+                var encodedBytes = message.values.get(i);
+                var messages = this.base64Decoder.decode(encodedBytes);
+                storageUpdateNotifications.put(storageId, messages);
+            }
+        }
+        return new StorageSyncResponse(
+                message.requestId,
+                storageUpdateNotifications,
+                message.raftCommitIndex,
+                message.destinationId,
+                message.success,
+                message.raftLeaderId
+        );
     }
 
     public Message serializeStorageSyncResponse(StorageSyncResponse response) {
-        return null;
+        var result = new Message();
+        result.type = MessageType.STORAGE_SYNC_RESPONSE.name();
+        result.requestId = response.requestId();
+        result.destinationId = response.destinationId();
+        result.raftLeaderId = response.leaderId();
+        result.raftCommitIndex = response.commitIndex();
+        result.success = response.success();
+        if (response.storageUpdateNotifications() != null) {
+            result.keys = new LinkedList<>();
+            result.values = new LinkedList<>();
+            for (var entry : response.storageUpdateNotifications().entrySet()) {
+                var storageId = entry.getKey();
+                var messages = entry.getValue();
+                var encoded = this.base64Encoder.encodeToString(messages);
+                result.keys.add(storageId);
+                result.values.add(encoded);
+            }
+        } else {
+            result.keys = Collections.emptyList();
+            result.values = Collections.emptyList();
+        }
+        return result;
     }
 }

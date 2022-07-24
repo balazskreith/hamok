@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -19,6 +20,7 @@ public class ReplicatedStorageBuilder<K, V> {
     private final StorageEndpointBuilder<K, V> storageEndpointBuilder = new StorageEndpointBuilder<>();
     private Consumer<StorageEndpoint<K, V>> storageEndpointBuiltListener = endpoint -> {};
     private Consumer<ReplicatedStorage<K, V>> storageBuiltListener = storage -> {};
+    private StorageGrid grid;
 
     private Supplier<Codec<K, String>> keyCodecSupplier;
     private Supplier<Codec<V, String>> valueCodecSupplier;
@@ -30,6 +32,7 @@ public class ReplicatedStorageBuilder<K, V> {
     }
 
     ReplicatedStorageBuilder<K, V> setStorageGrid(StorageGrid storageGrid) {
+        this.grid = storageGrid;
         this.storageEndpointBuilder.setStorageGrid(storageGrid);
         return this;
     }
@@ -80,10 +83,13 @@ public class ReplicatedStorageBuilder<K, V> {
         );
 
         var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
+        var localEndpointSet = Set.of(this.grid.getLocalEndpointId());
         var storageEndpoint = this.storageEndpointBuilder
                 .setMessageSerDe(actualMessageSerDe)
+                .setDefaultResolvingEndpointIdsSupplier(() -> localEndpointSet)
                 .setProtocol(ReplicatedStorage.PROTOCOL_NAME)
                 .build();
+        storageEndpoint.requestsDispatcher().subscribe(this.grid::submit);
         this.storageEndpointBuiltListener.accept(storageEndpoint);
         if (this.actualStorage == null) {
             this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()

@@ -5,6 +5,7 @@ import io.github.balazskreith.hamok.common.RwLock;
 import io.github.balazskreith.hamok.common.UnmodifiableIterator;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
@@ -38,9 +39,14 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public void clear() {
-		var entries = this.rwLock.supplyInReadLock(this.map::entrySet);
+		var events = this.rwLock.supplyInReadLock(() -> {
+			return this.map.entrySet()
+					.stream()
+					.map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue()))
+					.collect(Collectors.toList());
+		});
 		this.rwLock.runInWriteLock(this.map::clear);
-		entries.stream().map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
+		events.forEach(this.eventDispatcher::accept);
 	}
 
 	/**
@@ -84,7 +90,8 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public V set(K key, V value) {
-		return this.rwLock.supplyInWriteLock(() -> {
+		AtomicReference<StorageEvent<K, V>> collectedEvent = new AtomicReference<>(null);
+		var result = this.rwLock.supplyInWriteLock(() -> {
 			var oldValue = this.map.put(key, value);
 			StorageEvent<K, V> event;
 			if (oldValue == null) {
@@ -92,35 +99,44 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 			} else {
 				event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, value);
 			}
-			this.eventDispatcher.accept(event);
+			collectedEvent.set(event);
 			return oldValue;
 		});
+		try {
+			return result;
+		} finally {
+			var event = collectedEvent.get();
+			if (event != null) {
+				this.eventDispatcher.accept(event);
+			}
+		}
 	}
 
 	@Override
 	public Map<K, V> setAll(Map<K, V> map) {
 		var keys = map.keySet();
+		var events = new LinkedList<StorageEvent<K, V>>();
 		var result = new HashMap<K, V>();
 		this.rwLock.runInWriteLock(() -> {
 			for (var key : keys ) {
-				var value = this.map.get(key);
-				if (value == null) continue;
-				result.put(key, value);
+				var oldValue = this.map.get(key);
+				var newValue = map.get(key);
+				StorageEvent<K, V> event;
+				if (oldValue == null) {
+					event = StorageEvent.makeCreatedEntryEvent(this.id, key, map.get(key));
+				} else {
+					event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
+					result.put(key, oldValue);
+				}
+				events.add(event);
 			}
 			this.map.putAll(map);
 		});
-		for (var key : keys) {
-			var oldValue = result.get(key);
-			var newValue = map.get(key);
-			StorageEvent<K, V> event;
-			if (oldValue == null) {
-				event = StorageEvent.makeCreatedEntryEvent(this.id, key, newValue);
-			} else {
-				event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
-			}
-			this.eventDispatcher.accept(event);
+		try {
+			return Collections.unmodifiableMap(result);
+		} finally {
+			events.forEach(this.eventDispatcher::accept);
 		}
-		return Collections.unmodifiableMap(result);
 	}
 
 	@Override
@@ -129,13 +145,17 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 		if (oldValue == null) {
 			return false;
 		}
-		var event = StorageEvent.makeDeletedEntryEvent(this.id, key, oldValue);
-		this.eventDispatcher.accept(event);
-		return true;
+		try {
+			return true;
+		} finally {
+			var event = StorageEvent.makeDeletedEntryEvent(this.id, key, oldValue);
+			this.eventDispatcher.accept(event);
+		}
 	}
 
 	@Override
 	public Set<K> deleteAll(Set<K> keys) {
+		List<StorageEvent<K, V>> events = new LinkedList<>();
 		return this.rwLock.supplyInReadLock(() -> {
 			var result = new HashSet<K>();
 			for (var it = keys.iterator(); it.hasNext(); ) {
@@ -143,10 +163,15 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 				var value = this.map.remove(key);
 				if (value == null) continue;
 				var event = StorageEvent.makeDeletedEntryEvent(this.id, key, value);
-				this.eventDispatcher.accept(event);
+				events.add(event);
 				result.add(key);
 			}
-			return Collections.unmodifiableSet(result);
+			try {
+				return Collections.unmodifiableSet(result);
+			} finally {
+				events.forEach(this.eventDispatcher::accept);
+			}
+
 		});
 	}
 
@@ -173,8 +198,9 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public Map<K, V> insertAll(Map<K, V> entries) {
-		if (entries == null) return Collections.emptyMap();
+		if (entries == null || entries.size() < 1) return Collections.emptyMap();
 		var result = new HashMap<K, V>();
+		var events = new LinkedList<StorageEvent<K, V>>();
 		this.rwLock.runInWriteLock(() -> {
 			var it = entries.entrySet().iterator();
 			for (; it.hasNext(); ) {
@@ -184,9 +210,16 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 				if (oldValue != null) {
 					result.put(key, oldValue);
 					continue;
+				} else {
+					var event = StorageEvent.makeCreatedEntryEvent(this.id, key, entry.getValue());
+					events.add(event);
 				}
 			}
 		});
-		return result;
+		try {
+			return result;
+		} finally {
+			events.forEach(this.eventDispatcher::accept);
+		}
 	}
 }

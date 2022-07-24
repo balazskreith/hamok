@@ -15,7 +15,7 @@ public class RaccoonBuilder {
     private static final Logger logger = LoggerFactory.getLogger(Raccoon.class);
 
     private RaccoonConfig config = RaccoonConfig.create();
-    private Scheduler scheduler = Schedulers.computation();
+    private Scheduler scheduler = Schedulers.io();
     private Map<Integer, LogEntry> providedLogEntryMap;
     private int logExpirationTimeInMs = 10000;
     public RaccoonBuilder withConfig(RaccoonConfig config) {

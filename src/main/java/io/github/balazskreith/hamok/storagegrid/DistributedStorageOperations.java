@@ -89,7 +89,12 @@ class DistributedStorageOperations {
                 var entries = this.storage.getAll(keys);
                 var notification = new UpdateEntriesNotification<K, V>(entries, null, destinationId);
                 var endpoint = this.endpoints.get(0);
-                return endpoint.messageSerDe.serializeUpdateEntriesNotification(notification);
+                var message = endpoint.messageSerDe.serializeUpdateEntriesNotification(notification);
+                message.storageId = this.storage.getId();
+                if (0 < this.endpoints.size()) {
+                    message.protocol = this.endpoints.get(0).protocol;
+                }
+                return message;
             };
             result.storageId = this.storage.getId();
             return result;

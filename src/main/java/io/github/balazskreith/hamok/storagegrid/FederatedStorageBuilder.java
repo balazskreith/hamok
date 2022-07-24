@@ -24,6 +24,7 @@ public class FederatedStorageBuilder<K, V> {
     private final StorageEndpointBuilder<K, V> backupEndpointBuilder = new StorageEndpointBuilder<>();
     private Consumer<StorageEndpoint<K, V>> storageEndpointBuiltListener = endpoint -> {};
     private Consumer<FederatedStorage<K, V>> storageBuiltListener = storage -> {};
+    private StorageGrid grid;
 
     private Supplier<Codec<K, String>> keyCodecSupplier;
     private Supplier<Codec<V, String>> valueCodecSupplier;
@@ -38,6 +39,7 @@ public class FederatedStorageBuilder<K, V> {
     }
 
     FederatedStorageBuilder<K, V> setStorageGrid(StorageGrid grid) {
+        this.grid = grid;
         this.storageEndpointBuilder.setStorageGrid(grid);
         this.backupEndpointBuilder.setStorageGrid(grid);
         return this;
@@ -108,9 +110,11 @@ public class FederatedStorageBuilder<K, V> {
 
         var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
         var storageEndpoint = this.storageEndpointBuilder
+                .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
                 .setMessageSerDe(actualMessageSerDe)
                 .setProtocol(FederatedStorage.PROTOCOL_NAME)
                 .build();
+        storageEndpoint.requestsDispatcher().subscribe(this.grid::send);
         this.storageEndpointBuiltListener.accept(storageEndpoint);
         if (this.actualStorage == null) {
             this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
@@ -121,9 +125,11 @@ public class FederatedStorageBuilder<K, V> {
 
         var backupMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
         var backupEndpoint = this.backupEndpointBuilder
+                .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
                 .setMessageSerDe(backupMessageSerDe)
                 .setProtocol(BackupStorage.PROTOCOL_NAME)
                 .build();
+        backupEndpoint.requestsDispatcher().subscribe(this.grid::send);
         this.storageEndpointBuiltListener.accept(backupEndpoint);
         var backups = new BackupStorageBuilder<K, V>()
                 .withEndpoint(backupEndpoint)

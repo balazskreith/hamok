@@ -3,6 +3,7 @@ package io.github.balazskreith.hamok.storagegrid;
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
+import io.github.balazskreith.hamok.common.UuidTools;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,45 +41,78 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                 var response = getEntriesRequest.createResponse(entries);
                 this.endpoint.sendGetEntriesResponse(response);
             }).onDeleteEntriesRequest(request -> {
-                // only leader can do it
-
-                var deletedKeys = this.storage.deleteAll(request.keys());
-                var response = request.createResponse(deletedKeys);
-                this.endpoint.sendDeleteEntriesResponse(response);
-            }).onUpdateEntriesNotification(notification -> {
-                // only follower should do this
-
-                var entries = notification.entries();
-                this.storage.setAll(entries);
-            }).onUpdateEntriesRequest(request -> {
-                // only leader can do this
-
-                var entries = request.entries();
-                var oldEntries = this.storage.setAll(entries);
-                var response = request.createResponse(oldEntries);
-                this.endpoint.sendUpdateEntriesResponse(response);
-            }).onDeleteEntriesNotification(notification -> {
-                // only follower should do this
-
-                var keys = notification.keys();
-                this.storage.deleteAll(keys);
-            }).onRemoteEndpointDetached(remoteEndpointId -> {
-                this.standalone = 0 < this.endpoint.getRemoteEndpointIds().size();
-            }).onRemoteEndpointJoined(remoteEndpointId -> {
-                // we need to dump the whole map when number of endpoints got more than itself.
-            }).onLeaderIdChanged(leaderIdHolder -> {
-                if (leaderIdHolder.orElse(null) != null && this.standalone) {
-                    // we need to dump everything we have
-                    this.standalone = false;
-                    var keys = this.storage.keys();
-                    var entries = this.storage.getAll(keys);
-                    this.endpoint.submitRequestUpdateEntries(entries);
+                var keys = request.keys();
+                Set<K> deletedKeys = Collections.emptySet();
+                if (0 < keys.size()) {
+                    deletedKeys = this.storage.deleteAll(keys);
                 }
+                // only the same endpoint can resolve in replicated storage
+                if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
+                    var response = request.createResponse(deletedKeys);
+                    this.endpoint.sendDeleteEntriesResponse(response);
+                }
+            }).onUpdateEntriesNotification(notification -> {
+                // in storage sync this notification comes from the leader to
+                // update all entries
+                logger.info("{} updating storage {} by applying {} number of entries",
+                        this.endpoint.getLocalEndpointId(),
+                        this.getId(),
+                        notification.entries().size()
+                );
+                if (0 < notification.entries().size()) {
+                    this.storage.setAll(notification.entries());
+                }
+            }).onUpdateEntriesRequest(request -> {
+                var entries = request.entries();
+                Map<K, V> oldEntries = Collections.emptyMap();
+                if (0 < entries.size()) {
+                    oldEntries = this.storage.setAll(entries);
+                }
+                // only the same endpoint can resolve in replicated storage
+                if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
+                    var response = request.createResponse(oldEntries);
+                    this.endpoint.sendUpdateEntriesResponse(response);
+                }
+            }).onDeleteEntriesNotification(notification -> {
+                // this notification should not occur in replicated storage
+                logger.warn("Unexpected notification occurred in {}. request: {}", this.getClass().getSimpleName(), notification);
             }).onInsertEntriesNotification(notification -> {
-                this.storage.setAll(notification.entries());
+                // this notification should not occur in replicated storage
+                logger.warn("Unexpected notification occurred in {}. request: {}", this.getClass().getSimpleName(), notification);
             }).onInsertEntriesRequest(request -> {
-                var response = request.createResponse(this.storage.insertAll(request.entries()));
-                this.endpoint.sendInsertEntriesResponse(response);
+                var entries = request.entries();
+                Map<K, V> oldEntries = Collections.emptyMap();
+                if (0 < entries.size()) {
+                    oldEntries = this.storage.insertAll(entries);
+                }
+                // only the same endpoint can resolve in replicated storage
+                if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
+                    var response = request.createResponse(oldEntries);
+                    this.endpoint.sendInsertEntriesResponse(response);
+                }
+
+            }).onRemoteEndpointDetached(remoteEndpointId -> {
+                this.standalone = this.endpoint.getRemoteEndpointIds().size() < 1;
+            }).onRemoteEndpointJoined(remoteEndpointId -> {
+
+            }).onLeaderIdChanged(leaderIdHolder -> {
+                if (!this.standalone || leaderIdHolder.orElse(null) == null) {
+                    // if the endpoint is already part of the cluster
+                    // or the elected leader is null?! then we don't do anything
+                }
+                // we need to dump everything we have
+                this.standalone = false;
+                var keys = this.storage.keys();
+                if (keys.isEmpty()) {
+                    return;
+                }
+                var entries = this.storage.getAll(keys);
+                var insertedEntries = this.endpoint.requestInsertEntries(entries);
+                insertedEntries.keySet().stream()
+                    .filter(key -> !keys.contains(key))
+                    .forEach(key -> {
+                        logger.warn("{} member tried to insert an already existing entry to the cluster after joined to the cluster. key: {}", this.storage.getId(), key);
+                    });
             });
 
         this.disposer = new CompositeDisposable();
@@ -109,18 +143,20 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         if (this.standalone) {
             return this.storage.set(key, value);
         }
-        // we need to send it for commit and wait for the response
-        var oldEntries = this.endpoint.submitRequestUpdateEntries(Map.of(key, value));
-        if (oldEntries == null) return null;
-        return oldEntries.get(key);
+
+        var updatedEntries = this.endpoint.requestUpdateEntries(Map.of(key, value));
+        if (updatedEntries == null) {
+            return null;
+        }
+        return updatedEntries.get(key);
     }
 
     @Override
-    public Map<K, V> setAll(Map<K, V> m) {
+    public Map<K, V> setAll(Map<K, V> entries) {
         if (this.standalone) {
-            return this.storage.setAll(m);
+            return this.storage.setAll(entries);
         }
-        return this.endpoint.submitRequestUpdateEntries(m);
+        return this.endpoint.requestUpdateEntries(entries);
     }
 
     @Override
@@ -129,19 +165,22 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         if (this.standalone) {
             return this.storage.delete(key);
         }
-        var deletedKeys = this.endpoint.submitRequestDeleteEntries(Set.of(key));
-        if (deletedKeys == null) return false;
+        var deletedKeys = this.endpoint.requestDeleteEntries(Set.of(key));
+        if (deletedKeys == null) {
+            return false;
+        }
         return deletedKeys.contains(key);
     }
 
     @Override
     public Set<K> deleteAll(Set<K> keys) {
+        Objects.requireNonNull(keys, "Keys cannot be null");
         if (keys.size() < 1) {
             return Collections.emptySet();
         } else if (this.standalone) {
             return this.storage.deleteAll(keys);
         }
-        return this.endpoint.submitRequestDeleteEntries(keys);
+        return this.endpoint.requestDeleteEntries(keys);
     }
 
 
@@ -150,8 +189,10 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
      * @return
      */
     public Map<K, V> insertAll(Map<K, V> entries) {
-        return this.endpoint.submitRequestInsertEntries(entries);
-
+        if (this.standalone) {
+            return this.storage.insertAll(entries);
+        }
+        return this.endpoint.requestInsertEntries(entries);
     }
 
     @Override

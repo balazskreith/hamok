@@ -26,6 +26,7 @@ public class SeparatedStorageBuilder<K, V> {
     private Supplier<Codec<K, String>> keyCodecSupplier;
     private Supplier<Codec<V, String>> valueCodecSupplier;
     private Storage<K, V> actualStorage;
+    private StorageGrid grid = null;
     private String storageId = null;
     private int maxCollectedActualStorageEvents = 100;
     private int maxCollectedActualStorageTimeInMs = 100;
@@ -35,6 +36,7 @@ public class SeparatedStorageBuilder<K, V> {
     }
 
     SeparatedStorageBuilder<K, V> setStorageGrid(StorageGrid storageGrid) {
+        this.grid = storageGrid;
         this.storageEndpointBuilder.setStorageGrid(storageGrid);
         this.backupEndpointBuilder.setStorageGrid(storageGrid);
         return this;
@@ -101,9 +103,11 @@ public class SeparatedStorageBuilder<K, V> {
 
         var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
         var storageEndpoint = this.storageEndpointBuilder
+                .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
                 .setMessageSerDe(actualMessageSerDe)
                 .setProtocol(SeparatedStorage.PROTOCOL_NAME)
                 .build();
+        storageEndpoint.requestsDispatcher().subscribe(this.grid::send);
         this.storageEndpointBuiltListener.accept(storageEndpoint);
         if (this.actualStorage == null) {
             this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
@@ -114,9 +118,11 @@ public class SeparatedStorageBuilder<K, V> {
 
         var backupMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
         var backupEndpoint = this.backupEndpointBuilder
+                .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
                 .setMessageSerDe(backupMessageSerDe)
                 .setProtocol(BackupStorage.PROTOCOL_NAME)
                 .build();
+        backupEndpoint.requestsDispatcher().subscribe(this.grid::send);
         this.storageEndpointBuiltListener.accept(backupEndpoint);
         var backups = new BackupStorageBuilder<K, V>()
                 .withEndpoint(backupEndpoint)

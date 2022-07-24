@@ -45,13 +45,15 @@ public class PendingRequest implements Consumer<Message> {
             synchronized (this) {
                 var pendingBefore = this.pendingEndpointIds.size();
                 if (!this.pendingEndpointIds.remove(message.sourceId) && this.neededResponses < 1) {
-                    logger.warn("Source endpoint {} is not found in pending ids of request {}", message.sourceId, message.requestId);
+                    logger.debug("Source endpoint {} is not found in pending ids of request {}", message.sourceId, message.requestId);
+                    // fail-safe double checking to complete every pending request which has to be completed
                     completed = pendingBefore == 0;
+                    return;
                 }
                 var pendingAfter = this.pendingEndpointIds.size();
                 this.responses.add(message);
                 ++this.receivedResponse;
-//                logger.warn("{} pending before {}, pending after: {}", this.id.toString().substring(0, 8), pendingBefore, pendingAfter);
+                logger.debug("{} pending before {}, pending after: {}", this.id.toString().substring(0, 8), pendingBefore, pendingAfter);
                 completed = (pendingBefore == 1 && pendingAfter == 0) || (0 < this.neededResponses && this.receivedResponse <= this.neededResponses);
             }
         } finally {
@@ -108,7 +110,7 @@ public class PendingRequest implements Consumer<Message> {
         }
 
         synchronized (this) {
-            logger.warn("Pending request is resolved by responses {}", JsonUtils.objectToString(this.responses));
+            logger.debug("Pending request is resolved by responses {}", JsonUtils.objectToString(this.responses));
             return Collections.unmodifiableList(this.responses);
         }
     }
@@ -126,6 +128,7 @@ public class PendingRequest implements Consumer<Message> {
 
     public static class Builder {
         private PendingRequest pendingRequest = new PendingRequest();
+        private Consumer<PendingRequest> onBuiltListener = r -> {};
         Builder() {
 
         }
@@ -150,9 +153,18 @@ public class PendingRequest implements Consumer<Message> {
             return this;
         }
 
+        Builder onBuilt(Consumer<PendingRequest> onBuiltListener) {
+            this.onBuiltListener = onBuiltListener;
+            return this;
+        }
+
         public PendingRequest build() {
             Objects.requireNonNull(this.pendingRequest.id, "Pending request must have an id");
-            return this.pendingRequest;
+            try {
+                return this.pendingRequest;
+            } finally {
+                this.onBuiltListener.accept(this.pendingRequest);
+            }
         }
 
 

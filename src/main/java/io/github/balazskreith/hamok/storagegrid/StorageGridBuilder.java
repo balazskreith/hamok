@@ -6,9 +6,11 @@ import io.github.balazskreith.hamok.mappings.Mapper;
 import io.github.balazskreith.hamok.raccoons.RaccoonBuilder;
 import io.github.balazskreith.hamok.raccoons.RaccoonConfig;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.reactivex.rxjava3.core.Scheduler;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 public class StorageGridBuilder {
 
@@ -71,6 +73,16 @@ public class StorageGridBuilder {
 
     public StorageGridBuilder withRaftMaxLogRetentionTimeInMs(int retentionTimeInMs) {
         this.raccoonBuilder.withLogsExpirationTimeInMs(retentionTimeInMs);
+        return this;
+    }
+
+    public StorageGridBuilder withBaseExecutor(Executor executor) {
+        this.raccoonBuilder.withExecutor(executor);
+        return this;
+    }
+
+    public StorageGridBuilder withBaseScheduler(Scheduler scheduler) {
+        this.raccoonBuilder.withScheduler(scheduler);
         return this;
     }
 

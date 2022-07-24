@@ -25,7 +25,7 @@ abstract class AbstractState implements Runnable {
 
     public abstract RaftState getState();
 
-    public abstract Integer submit(byte[] bytes);
+    public abstract boolean submit(byte[] bytes);
 
     abstract void start();
 

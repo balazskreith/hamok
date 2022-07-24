@@ -35,9 +35,12 @@ public class MemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public void clear() {
-		var entries = Set.copyOf(this.map.entrySet());
+		var events = this.map.entrySet()
+				.stream()
+				.map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue()))
+				.collect(Collectors.toList());
 		this.map.clear();
-		entries.stream().map(entry -> StorageEvent.makeEvictedEntryEvent(this.id, entry.getKey(), entry.getValue())).forEach(this.eventDispatcher::accept);
+		events.forEach(this.eventDispatcher::accept);
 	}
 
 	@Override
@@ -88,6 +91,7 @@ public class MemoryStorage<K, V> implements Storage<K, V> {
 	public Map<K, V> setAll(Map<K, V> map) {
 		var keys = map.keySet();
 		var oldEntries = this.getAll(keys);
+		var events = new LinkedList<StorageEvent<K, V>>();
 		this.map.putAll(map);
 		for (var key : keys) {
 			var oldValue = oldEntries.get(key);
@@ -98,9 +102,14 @@ public class MemoryStorage<K, V> implements Storage<K, V> {
 			} else {
 				event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
 			}
-			this.eventDispatcher.accept(event);
+			events.add(event);
 		}
-		return oldEntries;
+		try {
+			return oldEntries;
+		} finally {
+			events.forEach(this.eventDispatcher::accept);
+		}
+
 	}
 
 	@Override
@@ -109,9 +118,12 @@ public class MemoryStorage<K, V> implements Storage<K, V> {
 		if (oldValue == null) {
 			return false;
 		}
-		var event = StorageEvent.makeDeletedEntryEvent(this.id, key, oldValue);
-		this.eventDispatcher.accept(event);
-		return true;
+		try {
+			return true;
+		} finally {
+			var event = StorageEvent.makeDeletedEntryEvent(this.id, key, oldValue);
+			this.eventDispatcher.accept(event);
+		}
 	}
 
 	@Override
@@ -148,8 +160,9 @@ public class MemoryStorage<K, V> implements Storage<K, V> {
 
 	@Override
 	public Map<K, V> insertAll(Map<K, V> entries) {
-		if (entries == null) return Collections.emptyMap();
+		if (entries == null || entries.size() < 1) return Collections.emptyMap();
 		var result = new HashMap<K, V>();
+		var events = new LinkedList<StorageEvent<K, V>>();
 		var it = entries.entrySet().iterator();
 		for (; it.hasNext(); ) {
 			var entry = it.next();
@@ -157,9 +170,16 @@ public class MemoryStorage<K, V> implements Storage<K, V> {
 			var oldValue = this.map.putIfAbsent(entry.getKey(), entry.getValue());
 			if (oldValue != null) {
 				result.put(key, oldValue);
-				continue;
+			} else {
+				var event = StorageEvent.makeCreatedEntryEvent(this.id, key, entry.getValue());
+				events.add(event);
 			}
 		}
-		return result;
+		try {
+			return result;
+		} finally {
+			events.forEach(this.eventDispatcher::accept);
+		}
+
 	}
 }

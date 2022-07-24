@@ -172,17 +172,17 @@ public class Raccoon implements Disposable, Closeable {
 
     public Observable<Optional<UUID>> changedLeaderId() { return this.actualLeaderId.observeOn(Schedulers.computation()); }
 
-    public Observable<RaftState> changedState() { return this.changedState; }
+    public Observable<RaftState> changedState() { return this.changedState.observeOn(Schedulers.computation()); }
 
-    public Observable<LogEntry> committedEntries() { return this.logs.committedEntries(); }
+    public Observable<LogEntry> committedEntries() { return this.logs.committedEntries().observeOn(Schedulers.computation()); }
 
-    public Observable<Integer> commitIndexSyncRequests() { return this.requestCommitIndexSync; }
+    public Observable<Integer> commitIndexSyncRequests() { return this.requestCommitIndexSync.observeOn(Schedulers.computation()); }
 
-    public Observable<UUID> joinedRemotePeerId() { return this.remotePeers.joinedRemoteEndpointIds(); }
+    public Observable<UUID> joinedRemotePeerId() { return this.remotePeers.joinedRemoteEndpointIds().observeOn(Schedulers.computation()); }
 
-    public Observable<UUID> detachedRemotePeerId() { return this.remotePeers.detachedRemoteEndpointIds(); }
+    public Observable<UUID> detachedRemotePeerId() { return this.remotePeers.detachedRemoteEndpointIds().observeOn(Schedulers.computation()); }
 
-    public Observable<Long> inactivatedLocalPeer() {return this.inactivatedLocalPeer; }
+    public Observable<Long> inactivatedLocalPeer() {return this.inactivatedLocalPeer.observeOn(Schedulers.computation()); }
 
     /**
      * Returns the index of the entry submitted to the leader
@@ -191,10 +191,10 @@ public class Raccoon implements Disposable, Closeable {
      * @param entry
      * @return
      */
-    public Integer submit(byte[] entry) {
+    public boolean submit(byte[] entry) {
         var state = this.actual.get();
         if (state == null) {
-            return null;
+            return false;
         }
         return state.submit(entry);
     }

@@ -39,8 +39,8 @@ class CandidateState extends AbstractState {
     }
 
     @Override
-    public Integer submit(byte[] entry) {
-        return null;
+    public boolean submit(byte[] entry) {
+        return false;
     }
 
     @Override

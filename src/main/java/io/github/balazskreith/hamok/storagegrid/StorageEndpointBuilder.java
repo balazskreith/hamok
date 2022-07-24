@@ -5,6 +5,8 @@ import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 public class StorageEndpointBuilder<U, R> {
@@ -27,6 +29,11 @@ public class StorageEndpointBuilder<U, R> {
 
     StorageEndpointBuilder<U, R> setStorageId(String value) {
         this.result.storageId = value;
+        return this;
+    }
+
+    StorageEndpointBuilder<U, R> setDefaultResolvingEndpointIdsSupplier(Supplier<Set<UUID>> defaultResolvingEndpointIdsSupplier) {
+        this.result.defaultResolvingEndpointIds = defaultResolvingEndpointIdsSupplier;
         return this;
     }
 

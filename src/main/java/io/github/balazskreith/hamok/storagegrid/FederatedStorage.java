@@ -116,7 +116,7 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 depot.accept(localEntries);
                 depot.accept(savedEntries);
                 var updatedEntries = depot.get();
-                logger.info("{} detected remote endpoint {} detached. extracted entries from backup: {}, localEntries: {}, updatedEntries: {}",
+                logger.debug("{} detected remote endpoint {} detached. extracted entries from backup: {}, localEntries: {}, updatedEntries: {}",
                         this.endpoint.getLocalEndpointId(),
                         remoteEndpointId,
                         JsonUtils.objectToString(savedEntries),

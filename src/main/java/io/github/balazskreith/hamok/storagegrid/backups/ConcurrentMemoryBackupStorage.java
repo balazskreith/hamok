@@ -170,7 +170,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             return Collections.emptyMap();
         }
         var result = Utils.firstNonNull(this.storedEntries.remove(endpointId), Collections.<K, V>emptyMap());
-        logger.info("{} Extracted {} entries for remote endpoint {}. Stored Entries: {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId, JsonUtils.objectToString(this.storedEntries));
+        logger.debug("{} Extracted {} entries for remote endpoint {}. Stored Entries: {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId, JsonUtils.objectToString(this.storedEntries));
         return result;
     }
 

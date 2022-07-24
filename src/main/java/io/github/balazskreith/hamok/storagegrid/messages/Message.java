@@ -46,4 +46,31 @@ public class Message {
     public Integer raftPeerNextIndex;
     public UUID raftCandidateId;
 
+    public Message makeCopy() {
+        var result = new Message();
+        result.sourceId = this.sourceId;
+        result.destinationId = this.destinationId;
+        result.storageId = this.storageId;
+        result.protocol = this.protocol;
+        result.requestId = this.requestId;
+        result.storageSize = this.storageSize;
+        result.timestamp = this.timestamp;
+        result.type = this.type;
+        result.keys = this.keys != null ? List.copyOf(this.keys) : null;
+        result.values = this.values != null ? List.copyOf(this.values) : null;
+        result.activeEndpointIds = this.activeEndpointIds != null ? List.copyOf(this.activeEndpointIds) : null;
+        result.inactiveEndpointIds = this.inactiveEndpointIds != null ? List.copyOf(this.inactiveEndpointIds) : null;
+        result.entries = this.entries != null ? List.copyOf(this.entries) : null;
+        result.success = this.success;
+        result.raftLeaderId = this.raftLeaderId;
+        result.raftCommitIndex = this.raftCommitIndex;
+        result.raftLeaderNextIndex = this.raftLeaderNextIndex;
+        result.raftPrevLogTerm = this.raftPrevLogTerm;
+        result.raftPrevLogIndex = this.raftPrevLogIndex;
+        result.raftTerm = this.raftTerm;
+        result.raftPeerNextIndex = this.raftPeerNextIndex;
+        result.raftCandidateId = this.raftCandidateId;
+        return result;
+    }
+
 }

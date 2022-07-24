@@ -10,9 +10,9 @@ import java.util.Set;
 import java.util.function.BinaryOperator;
 
 @DisplayName("Federation Storage Specifications Test")
-class FederatedStorageLocalSpecTest {
+class FederatedStorageSpecificationTest {
 
-    private static final Logger logger = LoggerFactory.getLogger(FederatedStorageStressTest.class);
+    private static final Logger logger = LoggerFactory.getLogger(FederatedStorageWorkingTest.class);
 
     private StorageGrid grid;
     private FederatedStorage<String, Integer> storage;

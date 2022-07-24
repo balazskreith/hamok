@@ -4,6 +4,7 @@ import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
+import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Consumer;
 import io.reactivex.rxjava3.subjects.PublishSubject;
@@ -24,6 +25,8 @@ public class StorageEndpoint<K, V> implements Disposable {
     // assigned by the grid
     StorageGrid grid;
     Supplier<Depot<Map<K, V>>> depotProvider;
+    Supplier<Set<UUID>> defaultResolvingEndpointIds;
+
     StorageOpSerDe<K, V> messageSerDe;
     String storageId;
     String protocol;
@@ -31,6 +34,8 @@ public class StorageEndpoint<K, V> implements Disposable {
     final Disposer disposer;
     // created by the constructor
     private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
+    private final Subject<Message> requestsDispatcherSubject = PublishSubject.create();
+
     private final Subject<Message> getEntriesRequestSubject = PublishSubject.create();
     private final Subject<Message> deleteEntriesRequestSubject = PublishSubject.create();
     private final Subject<Message> insertEntriesRequestSubject = PublishSubject.create();
@@ -101,6 +106,7 @@ public class StorageEndpoint<K, V> implements Disposable {
             case UPDATE_ENTRIES_REQUEST -> this.updateEntriesRequestSubject.onNext(message);
             case UPDATE_ENTRIES_NOTIFICATION -> this.updateEntriesNotificationSubject.onNext(message);
             case INSERT_ENTRIES_REQUEST -> this.insertEntriesRequestSubject.onNext(message);
+            case INSERT_ENTRIES_NOTIFICATION -> this.insertEntriesNotificationSubject.onNext(message);
             case DELETE_ENTRIES_REQUEST -> this.deleteEntriesRequestSubject.onNext(message);
             case DELETE_ENTRIES_NOTIFICATION -> this.deleteEntriesNotificationSubject.onNext(message);
             case GET_SIZE_REQUEST -> this.getSizeRequestSubject.onNext(message);
@@ -116,6 +122,14 @@ public class StorageEndpoint<K, V> implements Disposable {
                 logger.warn("Message type is not recognized {} ", JsonUtils.objectToString(message));
             }
         }
+    }
+
+    Observable<Message> requestsDispatcher() {
+        return this.requestsDispatcherSubject.map(message -> {
+            message.protocol = this.protocol;
+            message.storageId = this.storageId;
+            return message;
+        });
     }
 
     public StorageEndpoint<K, V> onDeleteEntriesRequest(Consumer<DeleteEntriesRequest<K>> listener) {
@@ -281,18 +295,6 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .collect(Collectors.toSet());
     }
 
-    public Set<K> submitRequestDeleteEntries(Set<K> keys) {
-        var request = DeleteEntriesRequest.<K>builder()
-                .setKeys(keys)
-                .build();
-        var message = this.messageSerDe.serializeDeleteEntriesRequest(request);
-        return this.submitRequest(message).stream()
-                .map(this.messageSerDe::deserializeDeleteEntriesResponse)
-                .map(DeleteEntriesResponse::deletedKeys)
-                .flatMap(Set::stream)
-                .collect(Collectors.toSet());
-    }
-
     public void sendDeleteEntriesNotification(DeleteEntriesNotification<K> notification) {
         var message = this.messageSerDe.serializeDeleteEntriesNotification(notification);
         this.send(message);
@@ -321,35 +323,11 @@ public class StorageEndpoint<K, V> implements Disposable {
         return depot.get();
     }
 
-    public Map<K, V> submitRequestUpdateEntries(Map<K, V> entries) {
-        var request = UpdateEntriesRequest.<K, V>builder()
-                .setEntries(entries)
-                .build();
-        var message = this.messageSerDe.serializeUpdateEntriesRequest(request);
-        var depot = depotProvider.get();
-        this.submitRequest(message).stream()
-                .map(this.messageSerDe::deserializeUpdateEntriesResponse)
-                .map(UpdateEntriesResponse::entries)
-                .forEach(depot::accept);
-        return depot.get();
-    }
-
     public Map<K, V> requestInsertEntries(Map<K, V> entries) {
         var request = new InsertEntriesRequest(UUID.randomUUID(), entries, this.grid.getLocalEndpointId());
         var message = this.messageSerDe.serializeInsertEntriesRequest(request);
         var depot = depotProvider.get();
         this.request(message).stream()
-                .map(this.messageSerDe::deserializeInsertEntriesResponse)
-                .map(InsertEntriesResponse::existingEntries)
-                .forEach(depot::accept);
-        return depot.get();
-    }
-
-    public Map<K, V> submitRequestInsertEntries(Map<K, V> entries) {
-        var request = new InsertEntriesRequest(UUID.randomUUID(), entries, this.grid.getLocalEndpointId());
-        var message = this.messageSerDe.serializeInsertEntriesRequest(request);
-        var depot = depotProvider.get();
-        this.submitRequest(message).stream()
                 .map(this.messageSerDe::deserializeInsertEntriesResponse)
                 .map(InsertEntriesResponse::existingEntries)
                 .forEach(depot::accept);
@@ -400,7 +378,7 @@ public class StorageEndpoint<K, V> implements Disposable {
         if (message.destinationId != null) {
             remoteEndpointIds = Set.of(message.destinationId);
         } else {
-            remoteEndpointIds = this.grid.getRemoteEndpointIds();
+            remoteEndpointIds = this.defaultResolvingEndpointIds.get();
         }
         logger.info("Creating request at {} ({}) remote endpoints: {}", this.grid.getLocalEndpointId(), this.grid.getContext(), JsonUtils.objectToString(remoteEndpointIds));
         if (remoteEndpointIds.size() < 1) {
@@ -415,7 +393,7 @@ public class StorageEndpoint<K, V> implements Disposable {
         this.pendingRequests.put(requestId, pendingRequest);
 
         logger.debug("{} Sending request (type: {}, id: {})", this.grid.getLocalEndpointId().toString().substring(0, 8), message.type, requestId);
-        this.send(message);
+        this.requestsDispatcherSubject.onNext(message);
 
         try {
             var result =  pendingRequest.get();
@@ -439,53 +417,10 @@ public class StorageEndpoint<K, V> implements Disposable {
         }
     }
 
-    private List<Message> submitRequest(Message message) {
-        return this.submitRequest(message, 0);
-    }
-
-    private List<Message> submitRequest(Message message, int retried) {
-        if (3 < retried) {
-            logger.error("Cannot resolve submitted request", JsonUtils.objectToString(message));
-            return Collections.emptyList();
-        }
-        var requestId = message.requestId;
-        // it only resolved by one and only one response.
-        var pendingRequest = PendingRequest.builder()
-                .withRequestId(requestId)
-                .withNeededResponse(1)
-                .withTimeoutInMs(this.grid.getRequestTimeoutInMs() * (retried + 1))
-                .build();
-
-        this.pendingRequests.put(requestId, pendingRequest);
-
-        // there is only one response we are waiting for, and only the leader will respond
-        this.submit(message);
-
-        try {
-            return pendingRequest.get();
-        } catch (ExecutionException e) {
-            logger.warn("Failed to resolve requestId {}. Retried: {}", requestId, retried, e);
-            return this.submitRequest(message, retried + 1);
-        } catch (InterruptedException e) {
-            logger.warn("Failed to resolve requestId {}. Retried: {}", requestId, retried, e);
-            return this.submitRequest(message, retried + 1);
-        } catch (TimeoutException e) {
-            e.printStackTrace();
-            logger.warn("Timed out request to resolve requestId {}. Retried: {}. Next iteration the timeout will be increased to {}", requestId, retried, (retried + 2) * this.grid.getRequestTimeoutInMs(), e);
-            return this.submitRequest(message, retried + 1);
-        }
-    }
-
     private void send(Message message) {
         message.storageId = this.storageId;
         message.protocol = this.protocol;
         this.grid.send(message);
-    }
-
-    private void submit(Message message) {
-        message.storageId = this.storageId;
-        message.protocol = this.protocol;
-        this.grid.submit(message);
     }
 
     @Override

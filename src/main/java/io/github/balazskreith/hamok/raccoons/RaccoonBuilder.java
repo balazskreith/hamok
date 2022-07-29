@@ -10,15 +10,17 @@ import org.slf4j.LoggerFactory;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 public class RaccoonBuilder {
     private static final Logger logger = LoggerFactory.getLogger(Raccoon.class);
 
     private RaccoonConfig config = RaccoonConfig.create();
-    private Scheduler scheduler = Schedulers.io();
+    private Scheduler scheduler = Schedulers.from(Executors.newFixedThreadPool(2));
     private Map<Integer, LogEntry> providedLogEntryMap;
     private int logExpirationTimeInMs = 10000;
     public RaccoonBuilder withConfig(RaccoonConfig config) {
+
         this.config = config;
         return this;
     }

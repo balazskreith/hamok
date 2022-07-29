@@ -1,6 +1,7 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
+import io.github.balazskreith.hamok.StorageBatchedIterator;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
 import io.github.balazskreith.hamok.common.Disposer;
@@ -304,7 +305,7 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public Iterator<StorageEntry<K, V>> iterator() {
-        return this.storage.iterator();
+        return new StorageBatchedIterator<>(this, this.config.iteratorBatchSize());
     }
 
     @Override

@@ -13,7 +13,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.function.BinaryOperator;
 
-@DisplayName("Federation Storage Stress Test Scenario. While federated storages are distributed through the grid, endpoint can be joined and detached, but the storage remains consequent.")
+@DisplayName("Replicated Storage Working Test Scenario. While replicated storages are distributed through the grid, endpoint can be joined and detached, but the storage should work as expected.")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class ReplicatedStorageWorkingTest {

@@ -3,12 +3,14 @@ package io.github.balazskreith.hamok.storagegrid;
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
+import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.UuidTools;
-import io.reactivex.rxjava3.disposables.CompositeDisposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Federated storage assumes of multiple client modifies the same entry.
@@ -27,7 +29,7 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
 
     private StorageEndpoint<K, V> endpoint;
     private final Storage<K, V> storage;
-    private final CompositeDisposable disposer;
+    private final Disposer disposer;
     private volatile boolean standalone;
     private final ReplicatedStorageConfig config;
 
@@ -115,12 +117,29 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                     });
             });
 
-        this.disposer = new CompositeDisposable();
+        var collectedEvents = this.storage.events()
+                .collectOn(Schedulers.io(), config.maxCollectedActualStorageTimeInMs(), config.maxCollectedActualStorageEvents());
+
+        this.disposer = Disposer.builder()
+                .addDisposable(collectedEvents.expiredEntries().subscribe(modifiedStorageEntries -> {
+                    if (!this.endpoint.isLeaderEndpoint()) {
+                        // only the leader add entry about expired entries.
+                        return;
+                    }
+                    var keys = modifiedStorageEntries.stream()
+                            .map(entry -> entry.getKey())
+                            .collect(Collectors.toSet());
+                    this.endpoint.requestDeleteEntries(keys);
+                }))
+                .addDisposable(collectedEvents.evictedEntries().subscribe(modifiedStorageEntries -> {
+                    // evicted items from local storage happens when clear is called.
+                }))
+                .build();
     }
 
     @Override
     public String getId() {
-        return this.endpoint.getStorageId();
+        return this.config.storageId();
     }
 
     @Override

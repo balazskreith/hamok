@@ -1,3 +1,4 @@
+
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
@@ -28,7 +29,7 @@ import java.util.stream.Stream;
  */
 public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
     private static final int ITERATOR_BATCH_SIZE = 10000;
-    private static final Logger logger = LoggerFactory.getLogger(FederatedStorage.class);
+    private static final Logger logger = LoggerFactory.getLogger(FederatedMultiStorage.class);
 
     static final String PROTOCOL_NAME = "federated-storage";
 
@@ -221,11 +222,34 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public V set(K key, V value) {
-        return this.storage.set(key, value);
+        var oldValue = this.storage.get(key);
+        if (oldValue == null) {
+            return this.storage.set(key, value);
+        }
+        var newValue = this.merge.apply(oldValue, value);
+        return this.storage.set(key, newValue);
     }
 
     @Override
     public Map<K, V> setAll(Map<K, V> m) {
+        if (m == null || m.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        var oldValues = this.storage.getAll(m.keySet());
+        if (oldValues == null || oldValues.isEmpty()) {
+            return this.storage.setAll(m);
+        }
+        var newValues = new HashMap<K, V>();
+        for (var entry : m.entrySet()) {
+            var key = entry.getKey();
+            var oldValue = oldValues.get(key);
+            if (oldValue == null) {
+                newValues.put(key, entry.getValue());
+            } else {
+                var newValue = this.merge.apply(oldValue, entry.getValue());
+                newValues.put(key, newValue);
+            }
+        }
         return this.storage.setAll(m);
     }
 

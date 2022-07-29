@@ -137,4 +137,13 @@ public interface Storage<K, V> extends AutoCloseable {
      * @return the set of keys deleted from the storage
      */
     Set<K> deleteAll(Set<K> keys);
+
+
+    static <U, R> Storage<U, R> fromMap(Map<U, R> map, String storageId) {
+        return new StorageFromMap<U, R>(storageId, map);
+    }
+
+    static <U, R> Map<U, R> toMap(Storage<U, R> storage, Class<U> keyClass, Class<R> valueClass) {
+        return new MapFromStorage<>(keyClass, valueClass, storage);
+    }
 }

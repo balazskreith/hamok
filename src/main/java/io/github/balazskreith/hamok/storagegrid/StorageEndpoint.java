@@ -3,6 +3,7 @@ package io.github.balazskreith.hamok.storagegrid;
 import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.JsonUtils;
+import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.disposables.Disposable;
@@ -130,6 +131,10 @@ public class StorageEndpoint<K, V> implements Disposable {
             message.storageId = this.storageId;
             return message;
         });
+    }
+
+    boolean isLeaderEndpoint() {
+        return UuidTools.equals(this.grid.getLeaderId(), this.grid.getLocalEndpointId());
     }
 
     public StorageEndpoint<K, V> onDeleteEntriesRequest(Consumer<DeleteEntriesRequest<K>> listener) {

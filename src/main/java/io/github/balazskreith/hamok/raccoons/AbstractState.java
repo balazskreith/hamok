@@ -12,7 +12,6 @@ abstract class AbstractState implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(AbstractState.class);
 
-    private final Object oneMessage = new Object();
     protected Raccoon base;
 
     protected AbstractState(Raccoon base) {

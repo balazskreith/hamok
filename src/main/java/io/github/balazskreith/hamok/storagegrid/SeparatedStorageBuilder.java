@@ -30,6 +30,7 @@ public class SeparatedStorageBuilder<K, V> {
     private String storageId = null;
     private int maxCollectedActualStorageEvents = 100;
     private int maxCollectedActualStorageTimeInMs = 100;
+    private int iteratorBatchSize = 300;
 
     SeparatedStorageBuilder() {
 
@@ -80,6 +81,11 @@ public class SeparatedStorageBuilder<K, V> {
         return this;
     }
 
+    public SeparatedStorageBuilder<K, V> setIteratorBatchSize(int value) {
+        this.iteratorBatchSize = value;
+        return this;
+    }
+
     public SeparatedStorageBuilder<K, V> setKeyCodecSupplier(Supplier<Codec<K, String>> value) {
         this.keyCodecSupplier = value;
         return this;
@@ -98,7 +104,8 @@ public class SeparatedStorageBuilder<K, V> {
         var config = new SeparatedStorageConfig(
                 this.storageId,
                 this.maxCollectedActualStorageEvents,
-                this.maxCollectedActualStorageTimeInMs
+                this.maxCollectedActualStorageTimeInMs,
+                this.iteratorBatchSize
         );
 
         var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());

@@ -26,6 +26,8 @@ public class ReplicatedStorageBuilder<K, V> {
     private Supplier<Codec<V, String>> valueCodecSupplier;
     private Storage<K, V> actualStorage;
     private String storageId = null;
+    private int maxCollectedActualStorageEvents = 100;
+    private int maxCollectedActualStorageTimeInMs = 100;
 
     ReplicatedStorageBuilder() {
 
@@ -44,6 +46,16 @@ public class ReplicatedStorageBuilder<K, V> {
 
     ReplicatedStorageBuilder<K, V> onStorageBuilt(Consumer<ReplicatedStorage<K, V>> listener) {
         this.storageBuiltListener = listener;
+        return this;
+    }
+
+    public ReplicatedStorageBuilder<K, V> setMaxCollectedStorageEvents(int value) {
+        this.maxCollectedActualStorageEvents = value;
+        return this;
+    }
+
+    public ReplicatedStorageBuilder<K, V> setMaxCollectedStorageTimeInMs(int value) {
+        this.maxCollectedActualStorageTimeInMs = value;
         return this;
     }
 
@@ -79,7 +91,9 @@ public class ReplicatedStorageBuilder<K, V> {
         Objects.requireNonNull(this.keyCodecSupplier, "Codec for keys must be defined");
         Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
         var config = new ReplicatedStorageConfig(
-                this.storageId
+                this.storageId,
+                this.maxCollectedActualStorageEvents,
+                this.maxCollectedActualStorageTimeInMs
         );
 
         var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());

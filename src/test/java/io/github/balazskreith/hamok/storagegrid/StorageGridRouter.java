@@ -2,7 +2,6 @@ package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.common.RwLock;
 import io.github.balazskreith.hamok.common.UuidTools;
-import io.github.balazskreith.hamok.mappings.Codec;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,11 +15,10 @@ class StorageGridRouter {
 
     private final Map<UUID, Transport> transports = new HashMap<>();
     private final RwLock rwLock = new RwLock();
-    private final Codec<Message, byte[]> codec;
     private volatile boolean enabled = true;
 
-    public StorageGridRouter(Codec<Message, byte[]> codec) {
-        this.codec = codec;
+    public StorageGridRouter() {
+
     }
 
     public void add(UUID endpointId, StorageGridTransport transport) {
@@ -76,18 +74,11 @@ class StorageGridRouter {
         });
     }
 
-    private void receive(byte[] bytes) {
+    private void receive(Message message) {
         if (!this.enabled) {
             return;
         }
         this.rwLock.runInReadLock(() -> {
-            Message message;
-            try {
-                message = this.codec.decode(bytes);
-            } catch (Throwable e) {
-                logger.warn("Error in decoding", e);
-                return;
-            }
             var source = this.transports.get(message.sourceId);
             if (source == null) {
                 logger.warn("Cannot find source {} in router", source.endpointId);
@@ -105,7 +96,7 @@ class StorageGridRouter {
                     continue;
                 }
                 if (message.destinationId == null || UuidTools.equals(message.destinationId, transport.endpointId)) {
-                    transport.transport.getReceiver().onNext(bytes);
+                    transport.transport.getReceiver().onNext(message);
                     logger.info("Message is routed from {} to {} type: {}, protocol {}", source.endpointId, transport.endpointId, message.type, message.protocol);
                 }
             }

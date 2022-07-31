@@ -29,7 +29,7 @@ import java.util.stream.Stream;
  */
 public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
     private static final int ITERATOR_BATCH_SIZE = 10000;
-    private static final Logger logger = LoggerFactory.getLogger(FederatedMultiStorage.class);
+    private static final Logger logger = LoggerFactory.getLogger(FederatedStorage.class);
 
     static final String PROTOCOL_NAME = "federated-storage";
 

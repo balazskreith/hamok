@@ -1,9 +1,7 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.mappings.Codec;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,7 +35,7 @@ class ReplicatedStorageWorkingTest {
     private ReplicatedStorage<String, Integer> bcnStockpile;
     private ReplicatedStorage<String, Integer> nyStockpile;
     private ReplicatedStorage<String, Integer> hkStockpile;
-    private StorageGridRouter router = new StorageGridRouter(Codec.create(JsonUtils::objectToBytes, bytes -> JsonUtils.bytesToObject(bytes, Message.class)));
+    private StorageGridRouter router = new StorageGridRouter();
 
     @Test
     @Order(1)

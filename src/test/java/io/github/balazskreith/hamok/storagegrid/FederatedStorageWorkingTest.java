@@ -1,10 +1,8 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.ModifiedStorageEntry;
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.mappings.Codec;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
@@ -35,7 +33,7 @@ class FederatedStorageWorkingTest {
     private FederatedStorage<String, Integer> bcnStockpile;
     private FederatedStorage<String, Integer> nyStockpile;
     private FederatedStorage<String, Integer> hkStockpile;
-    private StorageGridRouter router = new StorageGridRouter(Codec.create(JsonUtils::objectToBytes, bytes -> JsonUtils.bytesToObject(bytes, Message.class)));
+    private StorageGridRouter router = new StorageGridRouter();
 
     @Test
     @Order(1)

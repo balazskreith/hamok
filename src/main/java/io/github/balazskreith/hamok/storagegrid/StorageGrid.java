@@ -6,7 +6,6 @@ import io.github.balazskreith.hamok.raccoons.Raccoon;
 import io.github.balazskreith.hamok.raccoons.events.HelloNotification;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
 import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
@@ -32,8 +31,8 @@ public class StorageGrid implements Disposable {
     private final CompletablePromises<UUID, Boolean> pendingSubmits;
     private final Map<String, DistributedStorageOperations> storageOperations = new ConcurrentHashMap<>();
     private final GridOpSerDe gridOpSerDe = new GridOpSerDe();
-    private final Subject<byte[]> sender = PublishSubject.<byte[]>create().toSerialized();
-    private final Subject<byte[]> receiver = PublishSubject.<byte[]>create().toSerialized();
+    private final Subject<Message> sender = PublishSubject.<Message>create().toSerialized();
+    private final Subject<Message> receiver = PublishSubject.<Message>create().toSerialized();
 
     private final Codec<Message, byte[]> messageCodec;
     private final Disposer disposer;
@@ -55,30 +54,13 @@ public class StorageGrid implements Disposable {
         this.messageCodec = messageCodec;
         this.context = context;
         this.pendingSubmits = new CompletablePromises<UUID, Boolean>(this.config.requestTimeoutInMs(), "Pending Submission Requests");
-        this.transport = new StorageGridTransport() {
-            @Override
-            public Observer<byte[]> getReceiver() {
-                return receiver;
-            }
-
-            @Override
-            public Observable<byte[]> getSender() {
-                return sender;
-            }
-        };
+        this.transport = StorageGridTransport.create(this.receiver, this.sender);
 
         this.disposer = Disposer.builder()
                 .addDisposable(this.raccoon)
                 .addSubject(this.sender)
                 .addSubject(this.receiver)
-                .addDisposable(this.receiver.subscribe(bytes -> {
-                    Message message;
-                    try {
-                        message = this.messageCodec.decode(bytes);
-                    } catch (Exception ex) {
-                        logger.warn("{} Cannot decode message", this.context, ex);
-                        return;
-                    }
+                .addDisposable(this.receiver.subscribe(message -> {
                     logger.info("{} received message (type: {}) from {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.sourceId.toString().substring(0, 8));
                     if (message.destinationId == null || UuidTools.equals(message.destinationId, this.getLocalEndpointId())) {
                         this.dispatch(message);
@@ -369,7 +351,11 @@ public class StorageGrid implements Disposable {
     }
 
     public StorageGridTransport transport() {
-        return StorageGridTransport.create(this.receiver, this.sender);
+        return this.transport;
+    }
+
+    public UUID getLocalEndpointId() {
+        return this.raccoon.getId();
     }
 
     Set<UUID> getRemoteEndpointIds() {
@@ -388,15 +374,7 @@ public class StorageGrid implements Disposable {
             this.dispatch(message);
             return;
         }
-        byte[] bytes;
-        try {
-
-            bytes = this.messageCodec.encode(message);
-        } catch (Throwable e) {
-            logger.warn("{} Cannot encode message {}", this.context, JsonUtils.objectToString(message), e);
-            return;
-        }
-        this.sender.onNext(bytes);
+        this.sender.onNext(message);
     }
 
     boolean submit(Message message) {
@@ -466,10 +444,6 @@ public class StorageGrid implements Disposable {
 
     UUID getLeaderId() {
         return this.raccoon.getLeaderId();
-    }
-
-    UUID getLocalEndpointId() {
-        return this.raccoon.getId();
     }
 
     @Override

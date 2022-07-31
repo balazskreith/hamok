@@ -120,7 +120,7 @@ public class FederatedStorageBuilder<K, V> {
         var storageEndpoint = this.storageEndpointBuilder
                 .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
                 .setMessageSerDe(actualMessageSerDe)
-                .setProtocol(FederatedMultiStorage.PROTOCOL_NAME)
+                .setProtocol(FederatedStorage.PROTOCOL_NAME)
                 .build();
         storageEndpoint.requestsDispatcher().subscribe(this.grid::send);
         this.storageEndpointBuiltListener.accept(storageEndpoint);

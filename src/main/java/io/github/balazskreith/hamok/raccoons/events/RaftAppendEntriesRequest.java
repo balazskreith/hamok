@@ -1,5 +1,7 @@
 package io.github.balazskreith.hamok.raccoons.events;
 
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -9,7 +11,7 @@ public record RaftAppendEntriesRequest (
         UUID leaderId, // source endpoint id
         int prevLogIndex,
         int prevLogTerm,
-        List<byte[]> entries,
+        List<Message> entries,
         int leaderCommit,
         int leaderNextIndex
         )

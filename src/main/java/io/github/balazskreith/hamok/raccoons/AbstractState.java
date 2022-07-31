@@ -2,6 +2,7 @@ package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.raccoons.events.*;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +25,7 @@ abstract class AbstractState implements Runnable {
 
     public abstract RaftState getState();
 
-    public abstract boolean submit(byte[] bytes);
+    public abstract boolean submit(Message message);
 
     abstract void start();
 

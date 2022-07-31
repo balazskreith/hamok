@@ -1,6 +1,7 @@
 package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.RwLock;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
@@ -128,7 +129,7 @@ class RaftLogs {
         }
     }
 
-    public Integer submit(int term, byte[] entry) {
+    public Integer submit(int term, Message entry) {
         return this.rwLock.supplyInWriteLock(() -> {
             var logEntry = new LogEntry(this.nextIndex, term, entry);
             this.entries.put(logEntry.index(), logEntry);
@@ -150,7 +151,7 @@ class RaftLogs {
      * @param entry
      * @return
      */
-    public LogEntry compareAndOverride(int index, int expectedTerm, byte[] entry) throws IllegalAccessError{
+    public LogEntry compareAndOverride(int index, int expectedTerm, Message entry) throws IllegalAccessError{
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex <= index) {
                 return null;
@@ -178,7 +179,7 @@ class RaftLogs {
      * @param entry the entry of the log to be added
      * @return True if the expected index is the next index and the log is added, false otherwise
      */
-    public boolean compareAndAdd(int expectedNextIndex, int term, byte[] entry) {
+    public boolean compareAndAdd(int expectedNextIndex, int term, Message entry) {
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex != expectedNextIndex) {
                 return false;
@@ -196,8 +197,8 @@ class RaftLogs {
         });
     }
 
-    public List<byte[]> collectEntries(int startIndex) {
-        List<byte[]> result = new LinkedList<>();
+    public List<Message> collectEntries(int startIndex) {
+        List<Message> result = new LinkedList<>();
         return this.rwLock.supplyInReadLock(() -> {
             int missingEntries = 0;
             for (int logIndex = startIndex; logIndex < this.nextIndex; ++logIndex) {

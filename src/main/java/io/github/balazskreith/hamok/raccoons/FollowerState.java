@@ -2,6 +2,7 @@ package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.raccoons.events.*;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,7 +42,7 @@ class FollowerState extends AbstractState {
     }
 
     @Override
-    public boolean submit(byte[] entry) {
+    public boolean submit(Message entry) {
         return false;
     }
 

@@ -35,7 +35,7 @@ public class Message {
     public List<UUID> activeEndpointIds;
     public List<UUID> inactiveEndpointIds;
 
-    public List<String> entries;
+    public List<Message> entries;
     public Boolean success;
     public UUID raftLeaderId;
     public Integer raftCommitIndex;

@@ -108,9 +108,8 @@ public class StorageGrid implements Disposable {
                 }))
                 .addDisposable(this.raccoon.committedEntries().subscribe(logEntry -> {
                     // message is committed to the quorum of the cluster, so we can dispatch it
-                    var message = this.messageCodec.decode(logEntry.entry());
-                    logger.debug("{} Committed message is received (leader: {}). commitIndex {}. Message: {}", this.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), JsonUtils.objectToString(message));
-                    this.dispatch(message);
+                    logger.debug("{} Committed message is received (leader: {}). commitIndex {}. Message: {}", this.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), JsonUtils.objectToString(logEntry.entry()));
+                    this.dispatch(logEntry.entry());
                 }))
                 .addDisposable(this.raccoon.commitIndexSyncRequests().subscribe(signal -> {
 
@@ -395,24 +394,17 @@ public class StorageGrid implements Disposable {
                 return this.submit(message);
             }
         }
-        byte[] entry;
-        try {
-            entry = this.messageCodec.encode(message);
-        } catch (Throwable e) {
-            logger.warn("{} Error occurred while encoding entry", this.context, e);
-            return this.submit(message);
-        }
         var localEndpointId =  this.raccoon.getId();
         if (UuidTools.equals(leaderId, localEndpointId)) {
             logger.info("{} submitted message is directly routed to the leader", this.getLeaderId());
             // we can submit here.
-            var submitted = this.raccoon.submit(entry);
+            var submitted = this.raccoon.submit(message);
             return submitted;
         }
         // we need to send it to the leader in an embedded message
         var requestId = UUID.randomUUID();
         var pendingSubmit = this.pendingSubmits.create(requestId);
-        var record = new SubmitRequest(requestId, leaderId, entry);
+        var record = new SubmitRequest(requestId, leaderId, message);
         var request = this.gridOpSerDe.serializeSubmitRequest(record);
 
         this.send(request);

@@ -5,6 +5,7 @@ import io.github.balazskreith.hamok.raccoons.events.Events;
 import io.github.balazskreith.hamok.raccoons.events.InboundEvents;
 import io.github.balazskreith.hamok.raccoons.events.OutboundEvents;
 import io.github.balazskreith.hamok.rxutils.RxAtomicReference;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
@@ -191,7 +192,7 @@ public class Raccoon implements Disposable, Closeable {
      * @param entry
      * @return
      */
-    public boolean submit(byte[] entry) {
+    public boolean submit(Message entry) {
         var state = this.actual.get();
         if (state == null) {
             return false;

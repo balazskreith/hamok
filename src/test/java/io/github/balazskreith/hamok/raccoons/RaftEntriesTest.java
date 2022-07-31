@@ -1,13 +1,12 @@
 package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.Disposer;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -59,23 +58,23 @@ public class RaftEntriesTest {
 
         for (int i = 0; i < 10; ++i) {
             var testString = String.format("test-%d", i);
-            var futures = Map.of(
-                    this.follower_1.getId(), new CompletableFuture<byte[]>(),
-                    this.follower_2.getId(), new CompletableFuture<byte[]>()
-            );
-            var entry_1 = new CompletableFuture<byte[]>();
-            var entry_2 = new CompletableFuture<byte[]>();
+            var entry_1 = new CompletableFuture<Message>();
+            var entry_2 = new CompletableFuture<Message>();
             var disposer = Disposer.builder()
                     .addDisposable(this.follower_1.committedEntries().map(LogEntry::entry).subscribe(entry_1::complete))
                     .addDisposable(this.follower_2.committedEntries().map(LogEntry::entry).subscribe(entry_2::complete))
                     .build();
 
-            this.leader.submit(testString.getBytes(StandardCharsets.UTF_8));
+            var message = new Message();
+            message.type = testString;
+            this.leader.submit(message);
 
             CompletableFuture.allOf(entry_1, entry_2).get(30000, TimeUnit.MILLISECONDS);
 
-            Assertions.assertEquals(testString, new String(entry_1.get(1000, TimeUnit.MILLISECONDS)));
-            Assertions.assertEquals(testString, new String(entry_2.get(1000, TimeUnit.MILLISECONDS)));
+            Assertions.assertEquals(testString, new String(entry_1.get(1000, TimeUnit.MILLISECONDS).type));
+            Assertions.assertEquals(testString, new String(entry_2.get(1000, TimeUnit.MILLISECONDS).type));
+
+            disposer.dispose();
         }
     }
 

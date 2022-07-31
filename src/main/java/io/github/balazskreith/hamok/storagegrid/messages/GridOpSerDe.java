@@ -42,30 +42,18 @@ public class GridOpSerDe {
         result.raftPrevLogTerm = request.prevLogTerm();
         result.raftPrevLogIndex = request.prevLogIndex();
         result.raftTerm = request.term();
-        if (request.entries() != null) {
-            result.entries = request.entries().stream()
-                    .map(base64Encoder::encodeToString)
-                    .collect(Collectors.toList());
-        } else {
-            result.entries = Collections.emptyList();
-        }
+        result.entries = request.entries();
         return result;
     }
 
     public RaftAppendEntriesRequest deserializeRaftAppendRequest(Message message) {
-        List<byte[]> entries;
-        if (message.entries == null) {
-            entries = Collections.emptyList();
-        } else {
-            entries = message.entries.stream().map(this.base64Decoder::decode).collect(Collectors.toList());
-        }
         return new RaftAppendEntriesRequest(
                 message.destinationId,
                 message.raftTerm,
                 message.raftLeaderId,
                 message.raftPrevLogIndex,
                 message.raftPrevLogTerm,
-                entries,
+                message.entries,
                 message.raftCommitIndex,
                 message.raftLeaderNextIndex
         );
@@ -134,15 +122,15 @@ public class GridOpSerDe {
         var result = new Message();
         result.type = MessageType.SUBMIT_REQUEST.name();
         result.requestId = request.requestId();
-        result.entries = List.of(base64Encoder.encodeToString(request.entry()));
+        result.entries = List.of(request.entry());
         result.destinationId = request.destinationId();
         return result;
     }
 
     public SubmitRequest deserializeSubmitRequest(Message message) {
-        byte[] entry = null;
-        if (message.entries != null) {
-            entry = this.base64Decoder.decode(message.entries.get(0));
+        Message entry = null;
+        if (message.entries != null && 0 < message.entries.size()) {
+            entry = message.entries.get(0);
         }
         return new SubmitRequest(
                 message.requestId,

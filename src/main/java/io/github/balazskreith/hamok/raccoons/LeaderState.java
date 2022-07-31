@@ -2,6 +2,7 @@ package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.CompletablePromises;
 import io.github.balazskreith.hamok.raccoons.events.*;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,7 +36,7 @@ class LeaderState extends AbstractState {
     }
 
     @Override
-    public boolean submit(byte[] entry) {
+    public boolean submit(Message entry) {
         logger.info("{} submitted entry started", this.getLocalPeerId());
         var commitIndex = this.logs().submit(this.currentTerm, entry);
         this.submissions.create(commitIndex);

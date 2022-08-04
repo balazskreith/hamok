@@ -17,13 +17,15 @@ java {
 
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.1.5"
-    implementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.13.3'
+
 
     implementation 'org.slf4j:slf4j-api:1.7.30'
 
     testImplementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.11'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
     testImplementation group: 'io.netty', name: 'netty-all', version: '4.1.79.Final'
+
+    testImplementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.13.3'
 
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
 }

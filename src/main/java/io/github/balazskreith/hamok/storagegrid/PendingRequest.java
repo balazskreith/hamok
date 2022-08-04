@@ -1,6 +1,5 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +10,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public class PendingRequest implements Consumer<Message> {
     private static final Logger logger = LoggerFactory.getLogger(PendingRequest.class);
@@ -37,7 +37,7 @@ public class PendingRequest implements Consumer<Message> {
     @Override
     public void accept(Message message) {
         if (message.sourceId == null) {
-            logger.warn("No source id is assigned for message: {}", JsonUtils.objectToString(message));
+            logger.warn("No source id is assigned for message: {}", message);
             return;
         }
         boolean completed = false;
@@ -110,14 +110,14 @@ public class PendingRequest implements Consumer<Message> {
         }
 
         synchronized (this) {
-            logger.debug("Pending request is resolved by responses {}", JsonUtils.objectToString(this.responses));
+            logger.debug("Pending request is resolved by responses {}", this.responses);
             return Collections.unmodifiableList(this.responses);
         }
     }
 
     @Override
     public String toString() {
-        var remainingEndpoints = JsonUtils.objectToString(this.pendingEndpointIds);
+        var remainingEndpoints = String.join(", ", this.pendingEndpointIds.stream().map(Object::toString).collect(Collectors.toList()));
         return String.format("Pending request id: %s, received responses: %d, remaining endpoints: %s, timeout: %d",
                 this.id,
                 this.receivedResponse,

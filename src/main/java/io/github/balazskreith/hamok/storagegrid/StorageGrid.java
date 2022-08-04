@@ -1,7 +1,6 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.common.*;
-import io.github.balazskreith.hamok.mappings.Codec;
 import io.github.balazskreith.hamok.raccoons.Raccoon;
 import io.github.balazskreith.hamok.raccoons.events.HelloNotification;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
@@ -34,7 +33,7 @@ public class StorageGrid implements Disposable {
     private final Subject<Message> sender = PublishSubject.<Message>create().toSerialized();
     private final Subject<Message> receiver = PublishSubject.<Message>create().toSerialized();
 
-    private final Codec<Message, byte[]> messageCodec;
+//    private final Codec<Message, byte[]> messageCodec;
     private final Disposer disposer;
     private final StorageGridConfig config;
     private final StorageGridMetrics metrics = new StorageGridMetrics();
@@ -46,12 +45,10 @@ public class StorageGrid implements Disposable {
     StorageGrid(
             StorageGridConfig config,
             Raccoon raccoon,
-            Codec<Message, byte[]> messageCodec,
             String context
     ) {
         this.config = config;
         this.raccoon = raccoon;
-        this.messageCodec = messageCodec;
         this.context = context;
         this.pendingSubmits = new CompletablePromises<UUID, Boolean>(this.config.requestTimeoutInMs(), "Pending Submission Requests");
         this.transport = StorageGridTransport.create(this.receiver, this.sender);
@@ -108,7 +105,7 @@ public class StorageGrid implements Disposable {
                 }))
                 .addDisposable(this.raccoon.committedEntries().subscribe(logEntry -> {
                     // message is committed to the quorum of the cluster, so we can dispatch it
-                    logger.debug("{} Committed message is received (leader: {}). commitIndex {}. Message: {}", this.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), JsonUtils.objectToString(logEntry.entry()));
+                    logger.debug("{} Committed message is received (leader: {}). commitIndex {}. Message: {}", this.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), logEntry.entry());
                     this.dispatch(logEntry.entry());
                 }))
                 .addDisposable(this.raccoon.commitIndexSyncRequests().subscribe(signal -> {
@@ -137,16 +134,9 @@ public class StorageGrid implements Disposable {
                                 continue;
                             }
                             if (storageOperations.getStorageClassSimpleName().equals(ReplicatedStorage.class.getSimpleName())) {
-                                Message updateNotificationMessage = null;
-                                try {
-                                    updateNotificationMessage = this.messageCodec.decode(updateNotification);
-                                } catch (Throwable e) {
-                                    logger.warn("{} Update notification deserialization failed", this.context, e);
-                                    continue;
-                                }
                                 // Let's Rock
                                 storageOperations.storageLocalClear();
-                                this.dispatch(updateNotificationMessage);
+                                this.dispatch(updateNotification);
                                 logger.info("{} Storage {} is synchronized with the leader.", this.context, storageOperations.getStorageId());
                             }
                         }
@@ -165,10 +155,10 @@ public class StorageGrid implements Disposable {
     private void dispatch(Message message) {
         var type = MessageType.valueOfOrNull(message.type);
         if (type == null) {
-            logger.warn("{} ({}) received an unrecognized message {}", this.getLocalEndpointId(), this.context, JsonUtils.objectToString(message));
+            logger.warn("{} ({}) received an unrecognized message {}", this.getLocalEndpointId(), this.context, message);
             return;
         }
-        logger.debug("{} ({}) received message {}", this.getLocalEndpointId(), this.context, JsonUtils.objectToString(message));
+        logger.debug("{} ({}) received message {}", this.getLocalEndpointId(), this.context, message);
         switch (type) {
             case HELLO_NOTIFICATION -> {
                 var notification = this.gridOpSerDe.deserializeHelloNotification(message);
@@ -208,21 +198,14 @@ public class StorageGrid implements Disposable {
                     this.send(responseMessage);
                     return;
                 }
-                Map<String, byte[]> storageUpdateNotifications = new HashMap<>();
+                Map<String, Message> storageUpdateNotifications = new HashMap<>();
                 int savedCommitIndex = this.raccoon.getCommitIndex();
                 for (var it = this.storageOperations.values().iterator(); it.hasNext(); ) {
                     var storageOperations = it.next();
                     if (storageOperations == null) continue; // not ready
                     if (storageOperations.getStorageClassSimpleName().equals(ReplicatedStorage.class.getSimpleName())) {
                         var updateNotificationMessage = storageOperations.getAllKeysUpdateNotification(request.sourceEndpointId());
-                        byte[] storageEndpointNotification;
-                        try {
-                            storageEndpointNotification = this.messageCodec.encode(updateNotificationMessage);
-                        } catch (Throwable e) {
-                            logger.warn("{} ({}) Error while serializing message", this.getLocalEndpointId(), this.context, e);
-                            continue;
-                        }
-                        storageUpdateNotifications.put(storageOperations.getStorageId(), storageEndpointNotification);
+                        storageUpdateNotifications.put(storageOperations.getStorageId(), updateNotificationMessage);
                     }
                 }
 
@@ -267,7 +250,7 @@ public class StorageGrid implements Disposable {
             case SUBMIT_RESPONSE -> {
                 var requestId = message.requestId;
                 if (requestId == null) {
-                    logger.warn("{} No requestId attached for response {}", this.context, JsonUtils.objectToString(message));
+                    logger.warn("{} No requestId attached for response {}", this.context, message);
                     return;
                 }
                 this.pendingSubmits.resolve(requestId, message.success);
@@ -275,12 +258,12 @@ public class StorageGrid implements Disposable {
             default -> {
                 var storageId = message.storageId;
                 if (storageId == null) {
-                    logger.warn("{} No StorageId is defined for message {}", this.context, JsonUtils.objectToString(message));
+                    logger.warn("{} No StorageId is defined for message {}", this.context, message);
                     return;
                 }
                 var storageOperations = this.storageOperations.get(storageId);
                 if (storageOperations == null) {
-                    logger.warn("{} No message acceptor for storage {}. Message: {}", this.context, storageId, JsonUtils.objectToString(message));
+                    logger.warn("{} No message acceptor for storage {}. Message: {}", this.context, storageId, message);
                     return;
                 }
                 storageOperations.accept(message);

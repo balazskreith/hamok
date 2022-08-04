@@ -1,6 +1,5 @@
 package io.github.balazskreith.hamok.raccoons.events;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Consumer;
 import io.reactivex.rxjava3.subjects.PublishSubject;
@@ -13,11 +12,6 @@ import java.util.List;
 public class Events implements Disposable {
 
     private static final Logger logger = LoggerFactory.getLogger(Events.class);
-
-    static<T> T printAndForward(T obj) {
-        logger.info("{}: {}", obj.getClass().getSimpleName(), JsonUtils.objectToString(obj));
-        return obj;
-    }
 
     private final Subject<RaftVoteResponse> voteResponse = PublishSubject.<RaftVoteResponse>create().toSerialized();
     private final Subject<RaftVoteRequest> voteRequests = PublishSubject.<RaftVoteRequest>create().toSerialized();

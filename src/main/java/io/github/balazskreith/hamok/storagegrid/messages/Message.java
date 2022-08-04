@@ -1,7 +1,11 @@
 package io.github.balazskreith.hamok.storagegrid.messages;
 
+import io.github.balazskreith.hamok.common.Utils;
+
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 // oh C union, sweet C union, where are you when we need you the most!!!
 
@@ -73,4 +77,54 @@ public class Message {
         return result;
     }
 
+    @Override
+    public String toString() {
+        return String.format("{\n" +
+                "\tsourceId: %s\n" +
+                "\tdestinationId: %s\n" +
+                "\tstorageId: %s\n" +
+                "\tprotocol: %s\n" +
+                "\trequestId: %s\n" +
+                "\tstorageSize: %d\n" +
+                "\ttimestamp: %d\n" +
+                "\ttype: %s\n" +
+                "\tkeys: %s\n" +
+                "\tvalues: %s\n" +
+                "\tactiveEndpointIds: %s\n" +
+                "\tinactiveEndpointIds: %s\n" +
+                "\tentries: %s\n" +
+                "\tsuccess: %s\n" +
+                "\traftLeaderId: %s\n" +
+                "\traftCommitIndex: %d\n" +
+                "\traftLeaderNextIndex: %d\n" +
+                "\traftPrevLogTerm: %d\n" +
+                "\traftPrevLogIndex: %d\n" +
+                "\traftTerm: %d\n" +
+                "\traftPeerNextIndex: %d\n" +
+                "\traftCandidateId: %s\n" +
+                "}",
+                this.sourceId,
+                this.destinationId,
+                this.storageId,
+                this.protocol,
+                this.requestId,
+                this.storageSize,
+                this.timestamp,
+                this.type,
+                String.join(",", Utils.firstNonNull(keys, Collections.emptyList())),
+                String.join(",", Utils.firstNonNull(values, Collections.emptyList())),
+                String.join(",", Utils.firstNonNull(activeEndpointIds, Collections.emptyList()).stream().map(Object::toString).collect(Collectors.toList())),
+                String.join(",", Utils.firstNonNull(inactiveEndpointIds, Collections.emptyList()).stream().map(Object::toString).collect(Collectors.toList())),
+                String.join(",", Utils.firstNonNull(entries, Collections.emptyList()).stream().map(Object::toString).collect(Collectors.toList())),
+                this.success,
+                this.raftLeaderId,
+                this.raftCommitIndex,
+                this.raftLeaderNextIndex,
+                this.raftPrevLogTerm,
+                this.raftPrevLogIndex,
+                this.raftTerm,
+                this.raftPeerNextIndex,
+                this.raftCandidateId
+            );
+    }
 }

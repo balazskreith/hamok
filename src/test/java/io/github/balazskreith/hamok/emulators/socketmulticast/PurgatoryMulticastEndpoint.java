@@ -21,9 +21,9 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class MulticastEndpoint implements AutoCloseable {
+public class PurgatoryMulticastEndpoint implements AutoCloseable {
 
-    private static final Logger logger = LoggerFactory.getLogger(MulticastEndpoint.class);
+    private static final Logger logger = LoggerFactory.getLogger(PurgatoryMulticastEndpoint.class);
     private static final int MAX_BUFFER_SIZE = 1200;
     private static final int PACKET_INFO_LENGTH = 17; // 1 byte for end, 16 byte for uuid
     private static final int MAX_PACKET_SIZE = MAX_BUFFER_SIZE + PACKET_INFO_LENGTH;
@@ -42,7 +42,7 @@ public class MulticastEndpoint implements AutoCloseable {
     private final ObjectMapper mapper = new ObjectMapper();
 
 
-    MulticastEndpoint(InetAddress group, int port, UUID localEndpointId) throws IOException {
+    PurgatoryMulticastEndpoint(InetAddress group, int port, UUID localEndpointId) throws IOException {
         this.group = group; // InetAddress.getByName("230.0.0.0");
         this.port = port;
         this.localEndpointId = localEndpointId;
@@ -65,6 +65,7 @@ public class MulticastEndpoint implements AutoCloseable {
                         messageBytes, offset, bufferSize
                 );
                 var packet = new DatagramPacket(buffer.array(), 0, bufferSize + PACKET_INFO_LENGTH, group, port);
+                logger.warn("Packet to {}:{}", packet.getAddress(), packet.getPort());
                 this.outboundSocket.send(packet);
             }
         }));
@@ -109,6 +110,7 @@ public class MulticastEndpoint implements AutoCloseable {
                 e.printStackTrace();
                 break;
             }
+            logger.warn("Packet from {}:{}", packet.getAddress(), packet.getPort());
             byte end = packet.getData()[0];
             UUID sourceId = new BytesToUUID(packet.getData(), 1).uuid;
             var chunks = this.chunks.get(sourceId);

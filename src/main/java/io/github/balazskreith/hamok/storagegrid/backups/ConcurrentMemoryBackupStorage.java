@@ -1,6 +1,5 @@
 package io.github.balazskreith.hamok.storagegrid.backups;
 
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.storagegrid.StorageEndpoint;
@@ -170,7 +169,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             return Collections.emptyMap();
         }
         var result = Utils.firstNonNull(this.storedEntries.remove(endpointId), Collections.<K, V>emptyMap());
-        logger.debug("{} Extracted {} entries for remote endpoint {}. Stored Entries: {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId, JsonUtils.objectToString(this.storedEntries));
+        logger.debug("{} Extracted {} entries for remote endpoint {}. Stored Entries: {}", this.endpoint.getLocalEndpointId(), result.size(), endpointId, this.storedEntries);
         return result;
     }
 

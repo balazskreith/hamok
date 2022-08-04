@@ -191,14 +191,12 @@ public class GridOpSerDe {
     }
 
     public StorageSyncResponse deserializeStorageSyncResponse(Message message) {
-        var storageUpdateNotifications = new HashMap<String, byte[]>();
-        if (message.keys != null && message.values != null) {
-            var length = Math.min(message.keys.size(), message.values.size());
+        var storageUpdateNotifications = new HashMap<String, Message>();
+        if (message.keys != null && message.entries != null) {
+            var length = Math.min(message.keys.size(), message.entries.size());
             for (int i = 0; i < length; ++i) {
                 var storageId = message.keys.get(i);
-                var encodedBytes = message.values.get(i);
-                var messages = this.base64Decoder.decode(encodedBytes);
-                storageUpdateNotifications.put(storageId, messages);
+                storageUpdateNotifications.put(storageId, message.entries.get(i));
             }
         }
         return new StorageSyncResponse(
@@ -221,17 +219,15 @@ public class GridOpSerDe {
         result.success = response.success();
         if (response.storageUpdateNotifications() != null) {
             result.keys = new LinkedList<>();
-            result.values = new LinkedList<>();
+            result.entries = new LinkedList<>();
             for (var entry : response.storageUpdateNotifications().entrySet()) {
                 var storageId = entry.getKey();
-                var messages = entry.getValue();
-                var encoded = this.base64Encoder.encodeToString(messages);
                 result.keys.add(storageId);
-                result.values.add(encoded);
+                result.entries.add(entry.getValue());
             }
         } else {
             result.keys = Collections.emptyList();
-            result.values = Collections.emptyList();
+            result.entries = Collections.emptyList();
         }
         return result;
     }

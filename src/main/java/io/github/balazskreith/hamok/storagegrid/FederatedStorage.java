@@ -6,7 +6,6 @@ import io.github.balazskreith.hamok.StorageBatchedIterator;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
 import io.github.balazskreith.hamok.common.Disposer;
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
@@ -120,9 +119,9 @@ public class FederatedStorage<K, V> implements DistributedStorage<K, V> {
                 logger.debug("{} detected remote endpoint {} detached. extracted entries from backup: {}, localEntries: {}, updatedEntries: {}",
                         this.endpoint.getLocalEndpointId(),
                         remoteEndpointId,
-                        JsonUtils.objectToString(savedEntries),
-                        JsonUtils.objectToString(localEntries),
-                        JsonUtils.objectToString(updatedEntries)
+                        savedEntries.size(),
+                        localEntries.size(),
+                        updatedEntries.size()
                 );
                 this.storage.setAll(updatedEntries);
             }).onLocalEndpointReset(payload -> {

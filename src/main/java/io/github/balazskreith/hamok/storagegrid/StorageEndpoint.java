@@ -2,7 +2,6 @@ package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.Disposer;
-import io.github.balazskreith.hamok.common.JsonUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
 import io.reactivex.rxjava3.core.Observable;
@@ -120,7 +119,7 @@ public class StorageEndpoint<K, V> implements Disposable {
                     INSERT_ENTRIES_RESPONSE,
                     UPDATE_ENTRIES_RESPONSE -> this.processResponse(message);
             default -> {
-                logger.warn("Message type is not recognized {} ", JsonUtils.objectToString(message));
+                logger.warn("Message type is not recognized {} ", message);
             }
         }
     }
@@ -278,7 +277,8 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .map(GetEntriesResponse::foundEntries)
                 .forEach(depot::accept);
         var result = depot.get();
-        logger.debug("{} collected responses: {}, depot: {}", this.getLocalEndpointId(), JsonUtils.objectToString(responses), JsonUtils.objectToString(depot.get()));
+        logger.debug("{} collected responses: {}", this.getLocalEndpointId(),
+                responses.stream().map(Object::toString).collect(Collectors.toList()));
         return result;
     }
 
@@ -356,13 +356,13 @@ public class StorageEndpoint<K, V> implements Disposable {
 
     private void processResponse(Message message) {
         if (message.requestId == null) {
-            logger.warn("RequestId is null in response {}", JsonUtils.objectToString(message));
+            logger.warn("RequestId is null in response {}", message);
             return;
         }
         logger.debug("{} Receiving message for request id {} for type: {}", this.grid.getLocalEndpointId(), message.requestId, message.type);
         var pendingRequest = this.pendingRequests.get(message.requestId);
         if (pendingRequest == null) {
-            logger.warn("{} No pending request found for message {}", this.grid.getLocalEndpointId() ,JsonUtils.objectToString(message));
+            logger.warn("{} No pending request found for message {}", this.grid.getLocalEndpointId(), message);
             return;
         }
         logger.debug("{} Receiving response for request id {} for type: {}, {}",this.grid.getLocalEndpointId(), message.requestId, message.type, pendingRequest);
@@ -375,7 +375,7 @@ public class StorageEndpoint<K, V> implements Disposable {
 
     private List<Message> request(Message message, int retried) {
         if (3 < retried) {
-            logger.error("Cannot resolve request", JsonUtils.objectToString(message));
+            logger.error("Cannot resolve request {}", message);
             return Collections.emptyList();
         }
         var requestId = message.requestId;
@@ -385,7 +385,7 @@ public class StorageEndpoint<K, V> implements Disposable {
         } else {
             remoteEndpointIds = this.defaultResolvingEndpointIds.get();
         }
-        logger.info("Creating request at {} ({}) remote endpoints: {}", this.grid.getLocalEndpointId(), this.grid.getContext(), JsonUtils.objectToString(remoteEndpointIds));
+        logger.info("Creating request at {} ({}) remote endpoints: {}", this.grid.getLocalEndpointId(), this.grid.getContext(), remoteEndpointIds);
         if (remoteEndpointIds.size() < 1) {
             return Collections.emptyList();
         }

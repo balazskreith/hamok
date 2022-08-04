@@ -333,7 +333,7 @@ class ReplicatedStorageWorkingTest {
         started.get(20000, TimeUnit.MILLISECONDS);
 
         if (!countdown.await(20000, TimeUnit.MILLISECONDS)) {
-            throw new RuntimeException("Did not reached countdown");
+            throw new RuntimeException("Did not reached countdown: " + countdown.getCount());
         }
 
         Assertions.assertEquals(GOLD_STOCKPILE_VALUE, hkStockpile.get(GOLD_STOCKPILE_KEY));

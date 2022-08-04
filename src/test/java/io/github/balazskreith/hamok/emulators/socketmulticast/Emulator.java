@@ -13,8 +13,8 @@ public class Emulator {
 
     private StorageGrid usEastGrid;
     private StorageGrid euWestGrid;
-    private MulticastEndpoint usEastEndpoint;
-    private MulticastEndpoint euWestEndpoint;
+    private PurgatoryMulticastEndpoint usEastEndpoint;
+    private PurgatoryMulticastEndpoint euWestEndpoint;
 
     @Test
     @Order(1)
@@ -33,8 +33,8 @@ public class Emulator {
                 .build();
 
         var group = InetAddress.getByName("230.0.0.3");
-        this.usEastEndpoint = new MulticastEndpoint(group, 1243, this.usEastGrid.getLocalEndpointId());
-        this.euWestEndpoint = new MulticastEndpoint(group, 1243, this.euWestGrid.getLocalEndpointId());
+        this.usEastEndpoint = new PurgatoryMulticastEndpoint(group, 1243, this.usEastGrid.getLocalEndpointId());
+        this.euWestEndpoint = new PurgatoryMulticastEndpoint(group, 1243, this.euWestGrid.getLocalEndpointId());
 
         this.usEastGrid.transport().getSender().subscribe(this.usEastEndpoint.sender());
         this.usEastEndpoint.receiver().subscribe(this.usEastGrid.transport().getReceiver());

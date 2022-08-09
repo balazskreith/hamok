@@ -60,16 +60,19 @@ public class Emulator2 {
                 .setContext("EU West Endpoint")
                 .setListenerOption(StandardSocketOptions.SO_REUSEADDR, true)
                 .build();
+        try {
+            usEastEndpoint.start();
+            euWestEndpoint.start();
 
-        usEastEndpoint.start();
-        euWestEndpoint.start();
+            this.usEastGrid.transport().getSender().subscribe(usEastEndpoint);
+            usEastEndpoint.subscribe(this.usEastGrid.transport().getReceiver());
 
-        this.usEastGrid.transport().getSender().subscribe(usEastEndpoint);
-        usEastEndpoint.subscribe(this.usEastGrid.transport().getReceiver());
-
-        this.euWestGrid.transport().getSender().subscribe(euWestEndpoint);
-        euWestEndpoint.subscribe(this.euWestGrid.transport().getReceiver());
-
-        Thread.sleep(50000);
+            this.euWestGrid.transport().getSender().subscribe(euWestEndpoint);
+            euWestEndpoint.subscribe(this.euWestGrid.transport().getReceiver());
+            Thread.sleep(50000);
+        } finally {
+            usEastEndpoint.stop();
+            euWestEndpoint.stop();
+        }
     }
 }

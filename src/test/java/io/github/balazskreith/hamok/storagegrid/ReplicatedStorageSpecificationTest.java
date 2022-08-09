@@ -25,7 +25,7 @@ class ReplicatedStorageSpecificationTest {
 
         this.grid = StorageGrid.builder().build();
         this.storage = this.grid.<String, Integer>replicatedStorage()
-                .setStorageId("federation-storage-test")
+                .setStorageId("replicated-storage-test")
                 .setMaxCollectedStorageEvents(1)
                 .setMaxCollectedStorageTimeInMs(0)
                 .setKeyCodecSupplier(() -> keyCodec)

@@ -7,10 +7,13 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.*;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
-public class MulticastEndpoint extends Endpoint {
+public class MulticastEndpoint extends AbstractEndpoint {
 
     private static final Logger logger = LoggerFactory.getLogger(MulticastEndpoint.class);
 
@@ -18,58 +21,72 @@ public class MulticastEndpoint extends Endpoint {
         return new Builder();
     }
 
+    private String context = "No Context is given";
     private InetRouting inetRouting;
-    private Config config;
+    private int port = DefaultConfigs.DEFAULT_PORT;
     private NetworkInterface netIf;
     private Codec<Message, byte[]> codec;
-    private InetAddress address;
-    private InetSocketAddress group;
+    private Packetizer packetizer;
+    private InetAddress groupAddress;
+    private DatagramSocket sender;
+
+    private final Map<SocketOption, Object> listenerSocketOptions = new ConcurrentHashMap();
+    private final Map<SocketOption, Object> senderSocketOptions = new ConcurrentHashMap();
+    private final AtomicReference<MulticastSocket> listener;
+
 
     private volatile boolean run = true;
 
     private MulticastEndpoint() {
+        this.listener = new AtomicReference<>(null);
     }
 
     @Override
-    protected void process() {
-        MulticastSocket multicastSocket;
-        try {
-            multicastSocket = new MulticastSocket(this.config.port);
-            if (this.netIf != null) {
-                multicastSocket.joinGroup(this.group, netIf);
-            } else {
-                logger.warn("Joining to a multicast group without specifying network interface is deprecated. Please consider to provide that info");
-                multicastSocket.joinGroup(this.address);
+    protected void accept(Message message) {
+        InetAddress address = null;
+        if (message.destinationId == null) {
+            address = this.groupAddress;
+        } else {
+//            address = this.inetRouting.get(message.destinationId);
+            if (address == null) {
+                address = this.groupAddress;
             }
-            multicastSocket.connect(this.group.getAddress(), this.config.port);
-            logger.warn("isConnected: {}", multicastSocket.isConnected());
-        } catch (IOException e) {
-            logger.warn("Exception occurred while opening socket", e);
+        }
+        for (var it = packetizer.encode(message); it.hasNext(); ) {
+            var buffer = it.next();
+            var packet = new DatagramPacket(buffer, buffer.length, address, this.port);
+            logger.info("Packet send to {}:{}", packet.getAddress(), packet.getPort());
+            try {
+                this.sender.send(packet);
+            } catch (IOException e) {
+                logger.warn("Cannot sent packet. ", e);
+            }
+        }
+    }
+
+    @Override
+    protected void run() {
+        if (this.listener.get() != null) {
+            logger.warn("Listener socket was expected to be null, but it was not. Has it restarted abruptly?");
+            this.destroyListener();
+        }
+        var socket = this.createListener();
+        if (socket == null) {
+            this.stop();
+            logger.error("Socket is null, listening is aborted");
             return;
         }
-        var packetizer = new Packetizer(this.codec);
-        this.outbound().subscribe(message -> {
-            InetAddress address = this.inetRouting.get(message.sourceId);
-            if (address == null) {
-                address = this.address;
-            }
-            for (var it = packetizer.encode(message); it.hasNext(); ) {
-                var buffer = it.next();
-                var packet = new DatagramPacket(buffer, buffer.length, address, this.config.port);
-                logger.info("Packet send to {}:{}", packet.getAddress(), packet.getPort());
-                try {
-                    multicastSocket.send(packet);
-                } catch (IOException e) {
-                    logger.warn("Cannot sent packet. ", e);
-                }
-            }
-        });
         var depacketizer = new Depacketizer(this.codec);
-        byte[] buf = new byte[this.config.maxPacketLength];
+        byte[] buf = new byte[DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH + DefaultConfigs.DATAGRAM_PACKET_BUFFER_MAX_LENGTH];
         while (this.run) {
             DatagramPacket packet = new DatagramPacket(buf, buf.length);
             try {
-                multicastSocket.receive(packet);
+                try {
+                    socket.receive(packet);
+                } catch (java.net.SocketTimeoutException e) {
+                    continue;
+                }
+
                 var message = depacketizer.decode(packet);
                 if (message == null) {
                     continue;
@@ -77,23 +94,62 @@ public class MulticastEndpoint extends Endpoint {
                 if (message.sourceId != null && this.inetRouting.get(message.sourceId) == null) {
                     this.inetRouting.add(message.sourceId, packet.getAddress());
                 }
-                this.inbound().onNext(message);
+                this.dispatch(message);
             } catch (IOException e) {
                 logger.warn("Error occurred while listening", e);
                 break;
             }
         }
+        this.destroyListener();
     }
 
-    public record Config(int maxPacketLength, int port) {
-
+    private void destroyListener() {
+        var socket = this.listener.get();
+        if (socket == null) {
+            return;
+        }
+        try {
+            if (this.netIf != null) {
+                var socketAddress = new InetSocketAddress(this.groupAddress, this.port);
+                socket.leaveGroup(socketAddress, this.netIf);
+            } else {
+                socket.leaveGroup(this.groupAddress);
+            }
+        } catch (IOException e) {
+            logger.warn("Error occurred while trying to leave group {} for listener socket ({}).", this.groupAddress.toString(), this.context, e);
+        }
+        this.listener.set(null);
     }
+
+    private MulticastSocket createListener() {
+        try {
+            var socket = new MulticastSocket(this.port);
+            socket.setSoTimeout(DefaultConfigs.DEFAULT_SOCKET_RECEIVING_TIMEOUT);
+            for (var entry : this.listenerSocketOptions.entrySet()) {
+                socket.setOption(entry.getKey(), entry.getValue());
+            }
+            if (this.netIf != null) {
+                var socketAddress = new InetSocketAddress(this.groupAddress, this.port);
+                socket.joinGroup(socketAddress, this.netIf);
+            } else {
+                logger.warn("Joining to a multicast group without a given interface is deprecated in java since v14. please consider providing the interface");
+                socket.joinGroup(this.groupAddress);
+            }
+            logger.info("Socket is created ({}). multicast: {}", this.context, this.groupAddress != null && this.groupAddress.isMulticastAddress());
+            this.listener.set(socket);
+            return socket;
+        } catch (IOException e) {
+            logger.warn("Exception occurred while creating listener socket ({})", this.context, e);
+            return null;
+        }
+    }
+
 
     public static class Builder {
-        final MulticastEndpoint result = new MulticastEndpoint();
-        // Config config, InetRouting routing, InetAddress mcastaddr, NetworkInterface netIf, Decoder<byte[], Message> decoder
-        public Builder setConfig(Config config) {
-            this.result.config = config;
+        MulticastEndpoint result = new MulticastEndpoint();
+
+        public Builder setPort(int value) {
+            this.result.port = value;
             return this;
         }
 
@@ -103,12 +159,7 @@ public class MulticastEndpoint extends Endpoint {
         }
 
         public Builder setAddress(InetAddress mcastaddr) {
-            this.result.address = mcastaddr;
-            return this;
-        }
-
-        public Builder setNetworkInterface(NetworkInterface netIf) {
-            this.result.netIf = netIf;
+            this.result.groupAddress = mcastaddr;
             return this;
         }
 
@@ -122,14 +173,39 @@ public class MulticastEndpoint extends Endpoint {
             return this;
         }
 
+        public Builder setContext(String context) {
+            this.result.context = context;
+            return this;
+        }
+
+        public<T> Builder setListenerOption(SocketOption<T> option, T value) {
+            this.result.listenerSocketOptions.put(option, value);
+            return this;
+        }
+
+        public<T> Builder setSenderOption(SocketOption<T> option, T value) {
+            this.result.senderSocketOptions.put(option, value);
+            return this;
+        }
+
+        public Builder setNetworkInterface(NetworkInterface netIf) {
+            this.result.netIf = netIf;
+            return this;
+        }
+
         public MulticastEndpoint build() {
             if (this.result.inetRouting == null) {
                 this.result.inetRouting = new InetRouting();
             }
-            Objects.requireNonNull(this.result.config, "Config is required");
-            Objects.requireNonNull(this.result.address, "address is required");
+            Objects.requireNonNull(this.result.groupAddress, "address is required");
             Objects.requireNonNull(this.result.codec, "Codec is required");
-            this.result.group = new InetSocketAddress(this.result.address, this.result.config.port);
+            this.result.packetizer = new Packetizer(this.result.codec);
+            try {
+                this.result.sender = new DatagramSocket();
+            } catch (SocketException e) {
+                logger.warn("Error occurred while creating socket", e);
+                return null;
+            }
             return this.result;
         }
     }

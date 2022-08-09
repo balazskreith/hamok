@@ -46,12 +46,12 @@ public class Assembler {
         ArrayList<byte[]> chunks = new ArrayList<>();
         for (int seq = 0; seq < this.endSequence; ++seq) {
             var chunk = this.chunks.get(seq);
-            finalSize += chunk.packetBytes().length - Packetizer.PACKET_INFO_LENGTH;
+            finalSize += chunk.packetBytes().length -  DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH;
             chunks.add(chunk.packetBytes());
         }
         var buffer = ByteBuffer.allocate(finalSize);
         for (var chunk : chunks) {
-            buffer.put(chunk, Packetizer.PACKET_INFO_LENGTH, chunk.length - Packetizer.PACKET_INFO_LENGTH);
+            buffer.put(chunk,  DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH, chunk.length -  DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH);
         }
         return buffer.array();
     }

@@ -5,13 +5,13 @@ import io.github.balazskreith.hamok.mappings.Codec;
 import io.github.balazskreith.hamok.mappings.Mapper;
 import io.github.balazskreith.hamok.storagegrid.StorageGrid;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
-import io.github.balazskreith.hamok.transports.Endpoint;
+import io.github.balazskreith.hamok.transports.AbstractEndpoint;
 import io.github.balazskreith.hamok.transports.MulticastEndpoint;
 import org.junit.jupiter.api.*;
 
 import java.io.IOException;
 import java.net.InetAddress;
-import java.net.NetworkInterface;
+import java.net.StandardSocketOptions;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -19,8 +19,8 @@ public class Emulator2 {
 
     private StorageGrid usEastGrid;
     private StorageGrid euWestGrid;
-    private Endpoint usEastEndpoint;
-    private Endpoint euWestEndpoint;
+    private AbstractEndpoint usEastEndpoint;
+    private AbstractEndpoint euWestEndpoint;
 
     @Test
     @Order(1)
@@ -39,36 +39,37 @@ public class Emulator2 {
                 .build();
 
         var group = InetAddress.getByName("225.1.1.1");
-//        var group = InetAddress.getByName("127.0.0.1");
         var mapper = new ObjectMapper();
         var codec = Codec.<Message, byte[]>create(
                 Mapper.create(message -> mapper.writeValueAsBytes(message)),
                 Mapper.create(bytes -> mapper.readValue(bytes, Message.class))
         );
-        var config = new MulticastEndpoint.Config(1400, 5432);
-        var netif = NetworkInterface.getByName("en0");
-        this.usEastEndpoint = MulticastEndpoint.builder()
+
+        var usEastEndpoint = MulticastEndpoint.builder()
                 .setCodec(codec)
                 .setAddress(group)
-                .setConfig(config)
-//                .setNetworkInterface(netif)
+                .setEndpointId(this.usEastGrid.getLocalEndpointId())
+                .setContext("US East Endpoint")
+                .setListenerOption(StandardSocketOptions.SO_REUSEADDR, true)
                 .build();
-//        this.euWestEndpoint = MulticastEndpoint.builder()
-//                .setCodec(codec)
-//                .setAddress(group)
-//                .setConfig(config)
-////                .setNetworkInterface(netif)
-//                .build();
 
-        this.usEastEndpoint.start();
-//        this.euWestEndpoint.start();
+        var euWestEndpoint = MulticastEndpoint.builder()
+                .setCodec(codec)
+                .setAddress(group)
+                .setEndpointId(this.euWestGrid.getLocalEndpointId())
+                .setContext("EU West Endpoint")
+                .setListenerOption(StandardSocketOptions.SO_REUSEADDR, true)
+                .build();
 
-        this.usEastGrid.transport().getSender().subscribe(this.usEastEndpoint);
-        this.usEastEndpoint.subscribe(this.usEastGrid.transport().getReceiver());
+        usEastEndpoint.start();
+        euWestEndpoint.start();
 
-        this.euWestGrid.transport().getSender().subscribe(this.usEastEndpoint);
-        this.usEastEndpoint.subscribe(this.euWestGrid.transport().getReceiver());
+        this.usEastGrid.transport().getSender().subscribe(usEastEndpoint);
+        usEastEndpoint.subscribe(this.usEastGrid.transport().getReceiver());
 
-        Thread.sleep(20000);
+        this.euWestGrid.transport().getSender().subscribe(euWestEndpoint);
+        euWestEndpoint.subscribe(this.euWestGrid.transport().getReceiver());
+
+        Thread.sleep(50000);
     }
 }

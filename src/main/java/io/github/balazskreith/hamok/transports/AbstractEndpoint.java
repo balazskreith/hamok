@@ -18,53 +18,63 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 
-public abstract class Endpoint extends Observable<Message> implements Observer<Message> {
+public abstract class AbstractEndpoint extends Observable<Message> implements Observer<Message> {
 
     private static final Logger logger = LoggerFactory.getLogger(MulticastEndpoint.class);
 
     private final AtomicReference<Thread> thread;
-    private AtomicReference<Subject<Message>> inbound;
-    private AtomicReference<Subject<Message>> outbound;
+    private Subject<Message> inbound;
+    private Subject<Message> outbound;
     private List<Observer<? super Message>> observers = Collections.synchronizedList(new LinkedList<>());
     private UUID endpointId = null;
 
-    protected Endpoint() {
+    protected AbstractEndpoint() {
         this.thread = new AtomicReference<>();
-        this.inbound = new AtomicReference<>(PublishSubject.create());
-        this.outbound = new AtomicReference<>(PublishSubject.create());
+        this.inbound = PublishSubject.create();
+        this.outbound = PublishSubject.create();
+        this.outbound.subscribe(message -> {
+            this.accept(message);
+        });
     }
 
     private boolean filtering(Message m) {
-        if (this.endpointId == null) return true;
-        if (m.destinationId == null) return true;
-        if (UuidTools.equals(m.destinationId, this.endpointId)) return true;
+        if (this.endpointId == null) {
+            return true;
+        }
+        if (m.destinationId == null) {
+            return true;
+        }
+        if (UuidTools.equals(m.destinationId, this.endpointId)) {
+            return true;
+        }
+//        logger.warn("Dropping message destination id {}, local endpoint id: {}", m.destinationId, this.endpointId);
         return false;
     }
 
     @Override
     protected void subscribeActual(@NonNull Observer<? super Message> observer) {
         this.observers.add(observer);
-        this.inbound.get().filter(this::filtering).subscribe(observer);
+        this.inbound.filter(this::filtering).subscribe(observer);
     }
 
     @Override
     public void onSubscribe(@NonNull Disposable d) {
-        this.outbound.get().onSubscribe(d);
+        this.outbound.onSubscribe(d);
     }
 
     @Override
     public void onNext(@NonNull Message message) {
-        this.outbound.get().onNext(message);
+        this.outbound.onNext(message);
     }
 
     @Override
     public void onError(@NonNull Throwable e) {
-        this.outbound.get().onError(e);
+        this.outbound.onError(e);
     }
 
     @Override
     public void onComplete() {
-        this.outbound.get().onComplete();
+        this.outbound.onComplete();
     }
 
     public void start() {
@@ -72,7 +82,7 @@ public abstract class Endpoint extends Observable<Message> implements Observer<M
             logger.warn("Attempted to start twice");
             return;
         }
-        var thread = new Thread(this::process);
+        var thread = new Thread(this::run);
         if (this.thread.compareAndSet(null, thread)) {
             thread.start();
         }
@@ -92,28 +102,19 @@ public abstract class Endpoint extends Observable<Message> implements Observer<M
             thread.interrupt();
         }
         this.thread.set(null);
-        var oldInbound = this.inbound.get();
-        var oldOutbound = this.outbound.get();
-        var newInbound = PublishSubject.<Message>create();
-        var newOutbound = PublishSubject.<Message>create();
-        if (this.inbound.compareAndSet(oldInbound, newInbound)) {
-            this.observers.forEach(o -> newInbound.filter(this::filtering).subscribe(o));
-        }
     }
 
     protected void setEndpointId(UUID endpointId) {
         this.endpointId = endpointId;
     }
 
-    protected abstract void process();
+    protected abstract void run();
 
-    protected Observable<Message> outbound() {
-        return this.outbound.get();
+    protected void dispatch(Message message) {
+        this.inbound.onNext(message);
     }
 
-    protected Observer<Message> inbound() {
-        return this.inbound.get();
-    }
+    protected abstract void accept(Message message);
 
     public boolean started() {
         return this.thread.get() != null;

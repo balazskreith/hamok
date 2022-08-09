@@ -51,7 +51,7 @@ the application developer to manage the cluster of the service.
 ## Storages
 
 Before we go to the distributed storage grids, let's clarify what a storage means in hamok.
-Storage in hamok is a key, value object map providing the following operations:
+Storage in hamok is a key, value object map providing the following basic operations:
 insert, set, get, delete, clear. Additionally, every storage provide events
 to notify subscribers when a storage is altered or closed.
 
@@ -70,7 +70,7 @@ comes into the picture.
 
 ## Storage grids
 
-Storage grids are the endpoints of members in hamok for distributed storages.
+Storage grids are the entry points for distributed storages.
 
 Hamok does not provide locks as part of the distributed storages. As strange as it sounds, 
 it attempts to address the problem of distributed concurrent modifications
@@ -83,10 +83,6 @@ Hamok uses Raft as a consensus algorithm. Raft is combined with a so-called
 discovery protocol in hamok, and the combined package called raccoons.
 
 ### Create Storage Grids
-
-#### Transports
-
-#### Codecs
 
 ### Raft + Discovery (Raccoon)
 
@@ -153,6 +149,10 @@ replicated storage, consistency is ensured by raft.
 Partition tolerance: In case of message dropped by the network or any request failure, 
 the StorageGrid retries it. The number of retries is configurable when the 
 StorageGrid is built.
+
+## Codecs
+
+## Transports
 
 ## Collections
 

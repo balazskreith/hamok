@@ -12,8 +12,6 @@ public class Packetizer {
 
     private static final Logger logger = LoggerFactory.getLogger(Packetizer.class);
 
-    static final int PACKET_INFO_LENGTH = 5;
-    private static final int BUFFER_MAX_LENGTH = 1200;
     private final Encoder<Message, byte[]> encoder;
 
     public Packetizer(Encoder<Message, byte[]> encoder) {
@@ -38,8 +36,8 @@ public class Packetizer {
 
             @Override
             public byte[] next() {
-                int bufferSize = Math.min(messageBytes.length - this.offset, BUFFER_MAX_LENGTH);
-                ByteBuffer buffer = ByteBuffer.allocate(bufferSize + PACKET_INFO_LENGTH);
+                int bufferSize = Math.min(messageBytes.length - this.offset, DefaultConfigs.DATAGRAM_PACKET_BUFFER_MAX_LENGTH);
+                ByteBuffer buffer = ByteBuffer.allocate(bufferSize + DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH);
                 buffer.put(
                         offset + bufferSize == messageBytes.length ? (byte)1 : (byte)0
                 );
@@ -47,7 +45,7 @@ public class Packetizer {
                 buffer.put(
                         messageBytes, offset, bufferSize
                 );
-                this.offset += BUFFER_MAX_LENGTH;
+                this.offset +=  DefaultConfigs.DATAGRAM_PACKET_BUFFER_MAX_LENGTH;
                 ++this.seq;
                 return buffer.array();
             }

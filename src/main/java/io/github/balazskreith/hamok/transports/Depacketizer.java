@@ -10,7 +10,6 @@ import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import static io.github.balazskreith.hamok.transports.Packetizer.PACKET_INFO_LENGTH;
 
 public class Depacketizer {
 
@@ -29,8 +28,8 @@ public class Depacketizer {
         var assembler = this.assemblers.get(source);
         byte end = packet.getData()[0];
         if (end == 1 && assembler == null) {
-            var messageBytes = ByteBuffer.allocate(packet.getLength() - PACKET_INFO_LENGTH);
-            messageBytes.put(packet.getData(), PACKET_INFO_LENGTH, packet.getLength() - PACKET_INFO_LENGTH);
+            var messageBytes = ByteBuffer.allocate(packet.getLength() - DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH);
+            messageBytes.put(packet.getData(),  DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH, packet.getLength() -  DefaultConfigs.DATAGRAM_PACKET_HEADER_LENGTH);
             try {
                 return this.decoder.decode(messageBytes.array());
             } catch (Throwable e) {

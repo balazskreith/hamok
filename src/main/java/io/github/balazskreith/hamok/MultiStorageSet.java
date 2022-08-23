@@ -117,6 +117,16 @@ public interface MultiStorageSet<K, V> extends MultiStorage<K, V, Set<V>> {
             }
 
             @Override
+            public void evictAll(Set<E> keys) {
+                storage.evictAll(keys);
+            }
+
+            @Override
+            public void restoreAll(Map<E, Set<R>> entries) {
+                storage.restoreAll(entries);
+            }
+
+            @Override
             public void close() throws Exception {
                 storage.close();
             }

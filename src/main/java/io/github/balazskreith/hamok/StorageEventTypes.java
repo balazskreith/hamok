@@ -6,6 +6,7 @@ public enum StorageEventTypes {
     DELETED_ENTRY,
     EXPIRED_ENTRY,
     EVICTED_ENTRY,
+    RESTORED_ENTRY,
 
     CLOSING_STORAGE
 }

@@ -31,7 +31,6 @@ public class SyncedProperties {
     final AtomicInteger lastApplied = new AtomicInteger(-1);
 
     /* Volatile state on leaders (Reinitialized after election): */
-
     /**
      * for each server, index of the next log entry
      * to send to that server (initialized to leader

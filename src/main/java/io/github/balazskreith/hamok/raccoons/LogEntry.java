@@ -1,8 +1,8 @@
 package io.github.balazskreith.hamok.raccoons;
 
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.github.balazskreith.hamok.Models;
 
-public record LogEntry(int index, int term, Message entry) {
+public record LogEntry(int index, int term, Models.Message entry, Long timestamp) {
 
     @Override
     public String toString() {

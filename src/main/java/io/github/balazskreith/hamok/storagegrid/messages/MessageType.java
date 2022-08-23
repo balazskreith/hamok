@@ -40,6 +40,15 @@ public enum MessageType {
     SUBMIT_RESPONSE,
 
     /**
+     * Request to clear the storage
+     */
+    CLEAR_ENTRIES_REQUEST,
+    /**
+     * Response about the cleared storage
+     */
+    CLEAR_ENTRIES_RESPONSE,
+
+    /**
      * Request entries from remote endpoint(s).
      */
     GET_ENTRIES_REQUEST,
@@ -63,6 +72,19 @@ public enum MessageType {
      * Response to a delete request
      */
     DELETE_ENTRIES_RESPONSE,
+
+    /**
+     * Request to delete entries on a remote endpoint
+     */
+    REMOVE_ENTRIES_REQUEST,
+    /**
+     * Response to a delete request
+     */
+    REMOVE_ENTRIES_RESPONSE,
+
+    EVICT_ENTRIES_REQUEST,
+
+    EVICT_ENTRIES_RESPONSE,
 
     /**
      * Insert item(s) only if they don't exist. if they
@@ -102,11 +124,25 @@ public enum MessageType {
     DELETE_ENTRIES_NOTIFICATION,
 
     /**
+     * Notification to evict entries
+     */
+    EVICT_ENTRIES_NOTIFICATION,
+
+    /**
+     * Notification to remove specific entries from the storage.
+     * the difference between delete and remove that remove send the values
+     * specifically need to be removed and delete only send the keys. It is useful for distributed collections
+     *
+     */
+    REMOVE_ENTRIES_NOTIFICATION,
+
+    /**
      * Clear entries notification
      */
     CLEAR_ENTRIES_NOTIFICATION,
 
     ;
+
 
 
 

@@ -4,7 +4,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-public record UpdateEntriesRequest<K, V>(UUID requestId, Map<K, V> entries, UUID sourceEndpointId) {
+public record UpdateEntriesRequest<K, V>(
+        UUID requestId,
+        Map<K, V> entries,
+        UUID sourceEndpointId
+) {
     public static<U, R> OutboundRequestBuilder<U, R> builder() {
         return new OutboundRequestBuilder<U, R>();
     }

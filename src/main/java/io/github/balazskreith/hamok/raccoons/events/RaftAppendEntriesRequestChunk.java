@@ -1,6 +1,6 @@
 package io.github.balazskreith.hamok.raccoons.events;
 
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.github.balazskreith.hamok.Models;
 
 import java.util.UUID;
 
@@ -11,7 +11,7 @@ public record RaftAppendEntriesRequestChunk(
         int prevLogIndex,
         int prevLogTerm,
 //        List<Message> entries,
-        Message entry,
+        Models.Message entry,
         int leaderCommit,
         int leaderNextIndex,
         int sequence,
@@ -23,6 +23,7 @@ public record RaftAppendEntriesRequestChunk(
                 return new RaftAppendEntriesResponse(
                         this.peerId,
                         this.leaderId,
+                        this.requestId,
                         this.term,
                         success,
                         peerNextIndex,

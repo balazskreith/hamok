@@ -18,6 +18,7 @@ public interface StorageEvents<K, V> extends Disposable {
     Observable<ModifiedStorageEntry<K, V>> deletedEntry();
     Observable<ModifiedStorageEntry<K, V>> expiredEntry();
     Observable<ModifiedStorageEntry<K, V>> evictedEntry();
+    Observable<ModifiedStorageEntry<K, V>> restoredEntry();
 
     Observable<String> closingStorage();
 
@@ -27,6 +28,7 @@ public interface StorageEvents<K, V> extends Disposable {
         var deletedEntry = PublishSubject.<ModifiedStorageEntry<K, V>>create();
         var expiredEntry = PublishSubject.<ModifiedStorageEntry<K, V>>create();
         var evictedEntry = PublishSubject.<ModifiedStorageEntry<K, V>>create();
+        var restoredEntry = PublishSubject.<ModifiedStorageEntry<K, V>>create();
         var closingStorage = PublishSubject.<String>create();
 
         this.createdEntry().observeOn(schedulerSupplier.get()).subscribe(createdEntry);
@@ -34,6 +36,7 @@ public interface StorageEvents<K, V> extends Disposable {
         this.deletedEntry().observeOn(schedulerSupplier.get()).subscribe(deletedEntry);
         this.expiredEntry().observeOn(schedulerSupplier.get()).subscribe(expiredEntry);
         this.evictedEntry().observeOn(schedulerSupplier.get()).subscribe(evictedEntry);
+        this.restoredEntry().observeOn(schedulerSupplier.get()).subscribe(restoredEntry);
         this.closingStorage().observeOn(schedulerSupplier.get()).subscribe(closingStorage);
 
         return new StorageEvents<K, V>() {
@@ -60,6 +63,11 @@ public interface StorageEvents<K, V> extends Disposable {
             @Override
             public Observable<ModifiedStorageEntry<K, V>> evictedEntry() {
                 return evictedEntry;
+            }
+
+            @Override
+            public Observable<ModifiedStorageEntry<K, V>> restoredEntry() {
+                return restoredEntry;
             }
 
             @Override
@@ -90,6 +98,7 @@ public interface StorageEvents<K, V> extends Disposable {
         RxCollector<ModifiedStorageEntry<K, V>> deletedEntries;
         RxCollector<ModifiedStorageEntry<K, V>> expiredEntries;
         RxCollector<ModifiedStorageEntry<K, V>> evictedEntries;
+        RxCollector<ModifiedStorageEntry<K, V>> restoredEntries;
         Subject<String> closingStorage = PublishSubject.<String>create();
         if (0 < maxTimeInMs) {
             var timeoutController = new TimeoutController(maxTimeInMs, scheduler);
@@ -98,12 +107,14 @@ public interface StorageEvents<K, V> extends Disposable {
             deletedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
             expiredEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
             evictedEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
+            restoredEntries = timeoutController.<ModifiedStorageEntry<K, V>>rxCollectorBuilder().withMaxItems(maxItems).build();
         } else {
             createdEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
             updatedEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
             deletedEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
             expiredEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
             evictedEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
+            restoredEntries = RxCollector.<ModifiedStorageEntry<K,V>>builder().withMaxItems(maxItems).build();
         }
 
         this.createdEntry().subscribe(createdEntries);
@@ -111,6 +122,7 @@ public interface StorageEvents<K, V> extends Disposable {
         this.deletedEntry().subscribe(deletedEntries);
         this.expiredEntry().subscribe(expiredEntries);
         this.evictedEntry().subscribe(evictedEntries);
+        this.restoredEntry().subscribe(restoredEntries);
         this.closingStorage().observeOn(scheduler).subscribe(closingStorage);
         return new CollectedStorageEvents<K, V>() {
             @Override
@@ -139,6 +151,9 @@ public interface StorageEvents<K, V> extends Disposable {
             }
 
             @Override
+            public Observable<List<ModifiedStorageEntry<K, V>>> restoredEntries() { return restoredEntries;}
+
+            @Override
             public Observable<String> closingStorage() {
                 return closingStorage;
             }
@@ -148,7 +163,7 @@ public interface StorageEvents<K, V> extends Disposable {
                 if (this.isDisposed()) {
                     return;
                 }
-                List.of(createdEntries, updatedEntries, deletedEntries, expiredEntries, evictedEntries)
+                List.of(createdEntries, updatedEntries, deletedEntries, expiredEntries, evictedEntries, restoredEntries)
                         .stream().filter(c -> !c.isTerminated())
                         .forEach(RxCollector::onComplete);
             }
@@ -159,7 +174,8 @@ public interface StorageEvents<K, V> extends Disposable {
                         updatedEntries.isTerminated() &&
                         deletedEntries.isTerminated() &&
                         expiredEntries.isTerminated() &&
-                        evictedEntries.isTerminated();
+                        evictedEntries.isTerminated() &&
+                        restoredEntries.isTerminated();
             }
         };
     }

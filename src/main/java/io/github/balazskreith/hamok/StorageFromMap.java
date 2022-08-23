@@ -1,6 +1,7 @@
 package io.github.balazskreith.hamok;
 
 import java.util.*;
+import java.util.function.BinaryOperator;
 import java.util.stream.Collectors;
 
 public class StorageFromMap<K, V> implements Storage<K, V> {
@@ -8,14 +9,20 @@ public class StorageFromMap<K, V> implements Storage<K, V> {
 	private final Map<K, V> map;
 	private final StorageEventDispatcher<K, V> eventDispatcher = new StorageEventDispatcher<>();
 	private final String id;
+	private final BinaryOperator<V> mergeOp;
 
 	public StorageFromMap(Map<K, V> map) {
 		this(UUID.randomUUID().toString(), map);
 	}
 
 	public StorageFromMap(String id, Map<K, V> map) {
+		this(UUID.randomUUID().toString(), map, (oldValue, newValue) -> newValue);
+	}
+
+	public StorageFromMap(String id, Map<K, V> map, BinaryOperator<V> mergeOp) {
 		this.id = id;
 		this.map = map;
+		this.mergeOp = mergeOp;
 	}
 
 	@Override
@@ -71,12 +78,15 @@ public class StorageFromMap<K, V> implements Storage<K, V> {
 
 	@Override
 	public V set(K key, V value) {
-		var oldValue = this.map.put(key, value);
+		var oldValue = this.map.get(key);
 		StorageEvent<K, V> event;
 		if (oldValue == null) {
+			this.map.put(key, value);
 			event = StorageEvent.makeCreatedEntryEvent(this.id, key, value);
 		} else {
-			event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, value);
+			var newValue = this.mergeOp.apply(oldValue, value);
+			this.map.put(key, newValue);
+			event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
 		}
 		this.eventDispatcher.accept(event);
 		return oldValue;
@@ -87,24 +97,33 @@ public class StorageFromMap<K, V> implements Storage<K, V> {
 		var keys = map.keySet();
 		var oldEntries = this.getAll(keys);
 		var events = new LinkedList<StorageEvent<K, V>>();
-		this.map.putAll(map);
-		for (var key : keys) {
-			var oldValue = oldEntries.get(key);
-			var newValue = this.map.get(key);
+		var inserts = new HashMap<K, V>();
+		var updates = new HashMap<K, V>();
+		for (var key : keys ) {
+			var oldValue = this.map.get(key);
+			var newValue = map.get(key);
 			StorageEvent<K, V> event;
 			if (oldValue == null) {
-				event = StorageEvent.makeCreatedEntryEvent(this.id, key, newValue);
+				event = StorageEvent.makeCreatedEntryEvent(this.id, key, map.get(key));
+				inserts.put(key, newValue);
 			} else {
+				newValue = this.mergeOp.apply(oldValue, newValue);
 				event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
+				updates.put(key, newValue);
 			}
 			events.add(event);
+		}
+		if (0 < inserts.size()) {
+			this.map.putAll(inserts);
+		}
+		if (0 < updates.size()) {
+			this.map.putAll(updates);
 		}
 		try {
 			return oldEntries;
 		} finally {
 			events.forEach(this.eventDispatcher::accept);
 		}
-
 	}
 
 	@Override
@@ -126,6 +145,55 @@ public class StorageFromMap<K, V> implements Storage<K, V> {
 		return keys.stream().filter(this::delete).collect(Collectors.toSet());
 	}
 
+	@Override
+	public void evict(K key) {
+		var oldValue = this.map.remove(key);
+		if (oldValue == null) {
+			return;
+		}
+		var event = StorageEvent.makeEvictedEntryEvent(this.id, key, oldValue);
+		this.eventDispatcher.accept(event);
+	}
+
+	@Override
+	public void evictAll(Set<K> keys) {
+		keys.stream().forEach(this::evict);
+	}
+
+	@Override
+	public void restore(K key, V value) {
+		if (this.map.containsKey(key)) {
+			var message = String.format("Cannot restore already presented entries. key: %s, value: %s", key.toString(), value.toString());
+			throw new FailedOperationException(message);
+		}
+		this.map.put(key, value);
+		var event = StorageEvent.makeRestoredEntryEvent(this.id, key, value);
+		this.eventDispatcher.accept(event);
+	}
+
+	@Override
+	public void restoreAll(Map<K, V> entries) {
+		var keys = entries.keySet();
+		var events = new LinkedList<StorageEvent<K, V>>();
+		var restores = new HashMap<K, V>();
+		for (var key : keys ) {
+			var oldValue = this.map.get(key);
+			var restoredValue = entries.get(key);
+			if (oldValue != null) {
+				var message = String.format("Cannot restore already presented entries. key: %s, value: %s", key.toString(), oldValue.toString());
+				throw new FailedOperationException(message);
+			}
+			var event = StorageEvent.makeRestoredEntryEvent(this.id, key, restoredValue);
+			restores.put(key, restoredValue);
+			events.add(event);
+		}
+		if (0 < restores.size()) {
+			this.map.putAll(restores);
+		}
+		if (0 < events.size()) {
+			events.forEach(this.eventDispatcher::accept);
+		}
+	}
 
 	@Override
 	public Iterator<StorageEntry<K, V>> iterator() {
@@ -175,6 +243,5 @@ public class StorageFromMap<K, V> implements Storage<K, V> {
 		} finally {
 			events.forEach(this.eventDispatcher::accept);
 		}
-
 	}
 }

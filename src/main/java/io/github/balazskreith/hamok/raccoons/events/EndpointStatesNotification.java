@@ -9,8 +9,11 @@ import java.util.UUID;
 public record EndpointStatesNotification(
         UUID sourceEndpointId,
         Set<UUID> activeEndpointIds,
-        Set<UUID> inactiveEndpointIds,
-        UUID destinationEndpointId)
-{
+        Integer numberOfLogs,
+        Integer leaderNextIndex,
+        Integer commitIndex,
+        UUID destinationEndpointId,
+        Integer term
+) {
 
 }

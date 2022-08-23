@@ -1,14 +1,11 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.RwLock;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
-import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.schedulers.Schedulers;
-import io.reactivex.rxjava3.subjects.PublishSubject;
-import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
 
 class RaftLogs {
@@ -35,17 +32,14 @@ class RaftLogs {
 
     private final RwLock rwLock = new RwLock();
     private final Map<Integer, LogEntry> entries;
-    private final Subject<LogEntry> committedEntries = PublishSubject.create();
+    private final int expirationTimeInMs;
 
-    RaftLogs(Map<Integer, LogEntry> entries) {
+    RaftLogs(Map<Integer, LogEntry> entries, int expirationTimeInMs) {
         this.entries = entries;
+        this.expirationTimeInMs = expirationTimeInMs;
         this.commitIndex = -1;
         this.lastApplied = 0;
         this.nextIndex = 0;
-    }
-
-    public Observable<LogEntry> committedEntries() {
-        return this.committedEntries.observeOn(Schedulers.computation());
     }
 
     /**
@@ -73,24 +67,41 @@ class RaftLogs {
         });
     }
 
-    /**
-     * Increase the lastApplied index and removes the entry from the logs
-     */
-    public void apply() {
-        this.rwLock.runInWriteLock(() -> {
-            this.entries.remove(this.lastApplied);
-            ++this.lastApplied;
-        });
+    public int size() {
+        return this.rwLock.supplyInReadLock(this.entries::size);
     }
 
-    void expire(int expiredLogIndex) {
-        // special case for map expiring.
-        // we move the lastApplied up until the point of expired index, because we do not want gaps
+    private void expire() {
+        if (this.expirationTimeInMs < 1) {
+            // infinite
+            return;
+        }
+        int expiredLogIndex = this.rwLock.supplyInReadLock(() -> {
+            var thresholdInMs = Instant.now().toEpochMilli() - this.expirationTimeInMs;
+            int result = -1;
+            for (int index = this.lastApplied; index < this.commitIndex; ++index) {
+                var logEntry = this.entries.get(index);
+                if (logEntry == null) {
+                    // already purged?
+                    logger.info("LastApplied is set to {}, because for index {} logEntry does not exists", index + 1, index);
+                    this.lastApplied = index + 1;
+                    continue;
+                }
+                if (thresholdInMs <= logEntry.timestamp()) {
+                    return result;
+                }
+                result = index;
+            }
+            return result;
+        });
+        if (expiredLogIndex < 0) {
+            return;
+        }
         this.rwLock.runInWriteLock(() -> {
             if (this.nextIndex <= expiredLogIndex || expiredLogIndex < this.lastApplied) {
                 return;
             }
-            if (this.commitIndex <= expiredLogIndex) {
+            if (this.commitIndex < expiredLogIndex) {
                 logger.warn("expired log index is higher than the commit index. This is a problem! increase the expiration timeout, because it leads to a potential inconsistency issue.");
             }
             var removed = 0;
@@ -104,31 +115,45 @@ class RaftLogs {
         });
     }
 
-    public void commit() {
-        var result = this.rwLock.supplyInWriteLock(() -> {
-            if (this.nextIndex <= this.commitIndex + 1) {
-                logger.warn("Cannot commit index {}, because there is no next entry to commit. commitIndex: {}, nextIndex: {}", this.commitIndex, this.nextIndex);
-                return null;
-            }
-            var nextCommitIndex = this.commitIndex + 1;
-            var logEntry = this.entries.get(nextCommitIndex);
-            if (logEntry == null) {
-                logger.warn("LogEntry for nextCommitIndex {} is null. it supposed not to be null.", nextCommitIndex);
-                return null;
-            }
-            this.commitIndex = nextCommitIndex;
-            return logEntry;
+    public List<LogEntry> commitUntil(int newCommitIndex) {
+        var allowed = this.rwLock.supplyInReadLock(() -> {
+           if (newCommitIndex <= this.commitIndex) {
+               logger.warn("Requested to commit until {} index, but the actual commitIndex is {}", newCommitIndex, this.commitIndex);
+               return false;
+           }
+           return true;
         });
-        if (result != null) {
-            this.committedEntries.onNext(result);
-        } else {
-            logger.warn("Nothing to commit");
+        if (!allowed) {
+            return Collections.emptyList();
         }
+        var committedEntries = new LinkedList<LogEntry>();
+        this.rwLock.runInWriteLock(() -> {
+            while (this.commitIndex < newCommitIndex) {
+                if (this.nextIndex <= this.commitIndex + 1) {
+                    logger.warn("Cannot commit, because there is no next entry to commit. commitIndex: {}, nextIndex: {}, newCommitIndex: {}", this.commitIndex, this.nextIndex, newCommitIndex);
+                    return;
+                }
+                var nextCommitIndex = this.commitIndex + 1;
+                var logEntry = this.entries.get(nextCommitIndex);
+                if (logEntry == null) {
+                    logger.warn("LogEntry for nextCommitIndex {} is null. it supposed not to be null.", nextCommitIndex);
+                    return;
+                }
+                this.commitIndex = nextCommitIndex;
+                committedEntries.add(logEntry);
+            }
+        });
+        if (0 < committedEntries.size()) {
+            this.expire();
+        }
+        return committedEntries;
     }
 
-    public Integer submit(int term, Message entry) {
+    public Integer submit(int term, Models.Message entry) {
+        var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
-            var logEntry = new LogEntry(this.nextIndex, term, entry);
+            var logEntry = new LogEntry(this.nextIndex, term, entry, now);
+//            logger.info("Adding entry with index: {}", logEntry);
             this.entries.put(logEntry.index(), logEntry);
             ++this.nextIndex;
             return logEntry.index();
@@ -148,14 +173,15 @@ class RaftLogs {
      * @param entry
      * @return
      */
-    public LogEntry compareAndOverride(int index, int expectedTerm, Message entry) throws IllegalAccessError{
+    public LogEntry compareAndOverride(int index, int expectedTerm, Models.Message entry) throws IllegalAccessError{
+        var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex <= index) {
                 return null;
             }
             var oldLogEntry = this.entries.get(index);
             if (oldLogEntry == null) {
-                var newLogEntry = new LogEntry(index, expectedTerm, entry);
+                var newLogEntry = new LogEntry(index, expectedTerm, entry, now);
                 this.entries.put(newLogEntry.index(), newLogEntry);
                 return null;
             }
@@ -163,7 +189,7 @@ class RaftLogs {
                 // theoretically identical
                 return null;
             }
-            var newLogEntry = new LogEntry(oldLogEntry.index(), expectedTerm, entry);
+            var newLogEntry = new LogEntry(oldLogEntry.index(), expectedTerm, entry, now);
             this.entries.put(newLogEntry.index(), newLogEntry);
             return oldLogEntry;
         });
@@ -176,12 +202,13 @@ class RaftLogs {
      * @param entry the entry of the log to be added
      * @return True if the expected index is the next index and the log is added, false otherwise
      */
-    public boolean compareAndAdd(int expectedNextIndex, int term, Message entry) {
+    public boolean compareAndAdd(int expectedNextIndex, int term, Models.Message entry) {
+        var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex != expectedNextIndex) {
                 return false;
             }
-            var logEntry = new LogEntry(this.nextIndex, term, entry);
+            var logEntry = new LogEntry(this.nextIndex, term, entry, now);
             this.entries.put(logEntry.index(), logEntry);
             ++this.nextIndex;
             return true;
@@ -194,8 +221,8 @@ class RaftLogs {
         });
     }
 
-    public List<Message> collectEntries(int startIndex) {
-        List<Message> result = new ArrayList<>();
+    public List<Models.Message> collectEntries(int startIndex) {
+        List<Models.Message> result = new ArrayList<>();
         return this.rwLock.supplyInReadLock(() -> {
             int missingEntries = 0;
             for (int logIndex = startIndex; logIndex < this.nextIndex; ++logIndex) {
@@ -208,8 +235,11 @@ class RaftLogs {
                 result.add(logEntry.entry());
             }
             if (0 < missingEntries) {
-                logger.info("Requested to collect entries, startIndex: {}, endIndex: {}, but missing {} entries probably in the beginning. The other peer should request a commit sync", startIndex, this.nextIndex, missingEntries);
+                logger.debug("Requested to collect entries, startIndex: {}, endIndex: {}, but missing {} entries probably in the beginning. The other peer should request a commit sync", startIndex, this.nextIndex, missingEntries);
             }
+//            if (0 < result.size()) {
+//                logger.info("Retrieved 0 < result entries");
+//            }
             return result;
         });
     }
@@ -260,5 +290,6 @@ class RaftLogs {
             this.nextIndex = newCommitIndex + 1;
             this.lastApplied = newCommitIndex;
         });
+        logger.info("Logs are reset. new values: commitIndex: {}, nextIndex: {}, lastApplied: {}", newCommitIndex, newCommitIndex + 1, newCommitIndex);
     }
 }

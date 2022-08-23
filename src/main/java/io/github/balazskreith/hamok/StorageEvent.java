@@ -46,6 +46,11 @@ public interface StorageEvent<K, V> {
         return createEvent(storageId, StorageEventTypes.EVICTED_ENTRY, modifiedStorageEntry);
     }
 
+    static<U, R> StorageEvent<U, R> makeRestoredEntryEvent(String storageId, U key, R value) {
+        var modifiedStorageEntry = ModifiedStorageEntry.create(key, null, value);
+        return createEvent(storageId, StorageEventTypes.RESTORED_ENTRY, modifiedStorageEntry);
+    }
+
     static<U, R> StorageEvent<U, R> makeClosingStorageEvent(String storageId) {
         return createEvent(storageId, StorageEventTypes.CLOSING_STORAGE, null);
     }

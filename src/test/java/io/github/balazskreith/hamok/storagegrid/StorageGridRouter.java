@@ -1,8 +1,9 @@
 package io.github.balazskreith.hamok.storagegrid;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.RwLock;
+import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,32 +75,61 @@ class StorageGridRouter {
         });
     }
 
-    private void receive(Message message) {
+    public boolean isDisabled(UUID id) {
+        return this.rwLock.supplyInReadLock(() -> {
+            var transport = this.transports.get(id);
+            if (transport == null) return false;
+            return transport.enabled == false;
+        });
+    }
+
+    private void receive(Models.Message message) {
         if (!this.enabled) {
             return;
         }
+        var sourceId = Utils.supplyStringToUuidIfTrue(message.hasSourceId(), message::getSourceId);
         this.rwLock.runInReadLock(() -> {
-            var source = this.transports.get(message.sourceId);
+            var source = this.transports.get(sourceId);
             if (source == null) {
-                logger.warn("Cannot find source {} in router", source.endpointId);
+                logger.warn("Cannot find source {} in router", sourceId);
             } else if (source.enabled == false) {
-                logger.info("Blocked message from {} type: {}, protocol: {} to {}, because the source is disabled", source.endpointId, message.type, message.protocol, message.destinationId);
+                logger.trace("Blocked message from {} type: {}, protocol: {} to {}, because the source is disabled", source.endpointId,
+                        Utils.supplyIfTrue(message.hasType(), message::getType),
+                        Utils.supplyIfTrue(message.hasProtocol(), message::getProtocol),
+                        Utils.supplyIfTrue(message.hasDestinationId(), message::getDestinationId)
+                );
                 return;
             }
+            var notRouted = true;
             for (var it = this.transports.values().iterator(); it.hasNext(); ) {
                 var transport = it.next();
-                if (UuidTools.equals(message.sourceId, transport.endpointId)) {
+                if (UuidTools.equals(UUID.fromString(message.getSourceId()), transport.endpointId)) {
                     continue;
                 }
                 if (!transport.enabled) {
-                    logger.info("Blocked message from {} to (transport id: {}, message destination: {}), type: {}, protocol: {}, because the destination is disabled", source.endpointId, transport.endpointId, message.destinationId,  message.type, message.protocol);
+                    logger.trace("Blocked message from {} to (transport id: {}, message destination: {}), type: {}, protocol: {}, because the destination is disabled",
+                            source.endpointId,
+                            transport.endpointId,
+                            Utils.supplyIfTrue(message.hasDestinationId(), message::getDestinationId),
+                            Utils.supplyIfTrue(message.hasType(), message::getType),
+                            Utils.supplyIfTrue(message.hasProtocol(), message::getProtocol)
+                    );
                     continue;
                 }
-                if (message.destinationId == null || UuidTools.equals(message.destinationId, transport.endpointId)) {
+                var destinationId = Utils.supplyStringToUuidIfTrue(message.hasDestinationId(), message::getDestinationId);
+                if (destinationId == null || UuidTools.equals(destinationId, transport.endpointId)) {
                     transport.transport.getReceiver().onNext(message);
-                    logger.info("Message is routed from {} to {} type: {}, protocol {}", source.endpointId, transport.endpointId, message.type, message.protocol);
+                    notRouted = false;
                 }
             }
+            if (notRouted) {
+                logger.warn("Message is NOT routed from {} type: {}, protocol {}",
+                        source.endpointId,
+                        Utils.supplyIfTrue(message.hasType(), message::getType),
+                        Utils.supplyIfTrue(message.hasProtocol(), message::getProtocol)
+                );
+            }
+
         });
     }
 

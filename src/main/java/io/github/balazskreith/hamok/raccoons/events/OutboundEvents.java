@@ -10,6 +10,8 @@ public interface OutboundEvents {
     static final Logger logger = LoggerFactory.getLogger(OutboundEvents.class);
 
     static OutboundEvents createFrom(Events events) {
+//        var separatedThread = Executors.newFixedThreadPool(1);
+//        var scheduler = Schedulers.from(separatedThread);
         return new OutboundEvents() {
             @Override
             public Observable<RaftVoteResponse> voteResponse() {

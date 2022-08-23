@@ -7,7 +7,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.*;
 
-public class CompletablePromises<K, V> {
+/**
+ * Created for internal usage. Group together CompletableFutures.
+ * @param <K> the type of the key for the group
+ * @param <V> the type of the value resolved by the CompletableFutures
+ */
+class CompletablePromises<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(CompletablePromises.class);
 
     private final Map<K, CompletableFuture<Optional<V>>> requests = new ConcurrentHashMap<>();
@@ -40,7 +45,11 @@ public class CompletablePromises<K, V> {
             return Optional.empty();
         }
         try {
-            return request.get(this.timeoutInMs, TimeUnit.MILLISECONDS);
+            if (this.timeoutInMs < 1) {
+                return request.get();
+            } else {
+                return request.get(this.timeoutInMs, TimeUnit.MILLISECONDS);
+            }
         } catch (ExecutionException e) {
             logger.warn("Exception occurred while awaiting for request {}, context: {}", key, context);
         } catch (InterruptedException e) {

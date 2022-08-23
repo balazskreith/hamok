@@ -18,4 +18,22 @@ public class SetUtils {
         Stream.of(sets).forEach(result::addAll);
         return Collections.unmodifiableSet(result);
     }
+
+    public static<T> boolean isContentsEqual(Set<T> a, Set<T> b) {
+        if (a == null && b == null) return true;
+        if (a == null) return false;
+        if (b == null) return false;
+        if (a.size() != b.size()) return false;
+        for (var it = a.iterator(); it.hasNext(); ) {
+            var item = it.next();
+            if (!b.contains(item)) return false;
+        }
+
+        for (var it = b.iterator(); it.hasNext(); ) {
+            var item = it.next();
+            if (!a.contains(item)) return false;
+        }
+
+        return true;
+    }
 }

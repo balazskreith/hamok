@@ -1,9 +1,11 @@
 package io.github.balazskreith.hamok.storagegrid.messages;
 
+import io.github.balazskreith.hamok.Models;
+
 import java.util.Objects;
 import java.util.UUID;
 
-public record SubmitRequest(UUID requestId, UUID destinationId, Message entry) {
+public record SubmitRequest(UUID requestId, UUID destinationId, Models.Message entry) {
     public static OutboundNotificationBuilder builder() {
         return new OutboundNotificationBuilder();
     }
@@ -11,7 +13,7 @@ public record SubmitRequest(UUID requestId, UUID destinationId, Message entry) {
     public static class OutboundNotificationBuilder {
         private UUID requestId;
         private UUID destinationId;
-        private Message entry;
+        private Models.Message entry;
 
         OutboundNotificationBuilder() {
 
@@ -27,7 +29,7 @@ public record SubmitRequest(UUID requestId, UUID destinationId, Message entry) {
             return this;
         }
 
-        public OutboundNotificationBuilder setEntry(Message entry) {
+        public OutboundNotificationBuilder setEntry(Models.Message entry) {
             this.entry = entry;
             return this;
         }

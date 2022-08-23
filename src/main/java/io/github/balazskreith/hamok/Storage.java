@@ -16,6 +16,14 @@ import java.util.Set;
  */
 public interface Storage<K, V> extends AutoCloseable {
 
+    static <U, R> Storage<U, R> fromMap(Map<U, R> map, String storageId) {
+        return new StorageFromMap<U, R>(storageId, map);
+    }
+
+    static <U, R> Map<U, R> toMap(Storage<U, R> storage, Class<U> keyClass, Class<R> valueClass) {
+        return new MapFromStorage<>(keyClass, valueClass, storage);
+    }
+
     String getId();
     /**
      * The number of entries the storage has
@@ -40,21 +48,6 @@ public interface Storage<K, V> extends AutoCloseable {
      * @return
      */
     Set<K> keys();
-
-    /**
-     * Events of the storage
-     * @return
-     */
-    StorageEvents<K, V> events();
-
-    /**
-     * returns an iterator for the storage.
-     *
-     * Whether the iterator directly iterates through the storage or only a set of copy is implementation dependent
-     *
-     * @return an iterator for the storage
-     */
-    Iterator<StorageEntry<K, V>> iterator();
 
     /**
      * Read a value from the storage belongs to a given key.
@@ -138,12 +131,44 @@ public interface Storage<K, V> extends AutoCloseable {
      */
     Set<K> deleteAll(Set<K> keys);
 
-
-    static <U, R> Storage<U, R> fromMap(Map<U, R> map, String storageId) {
-        return new StorageFromMap<U, R>(storageId, map);
+    /**
+     * Evict entry belong to the given key
+     *
+     * @param key
+     */
+    default void evict(K key) {
+        this.evictAll(Set.of(key));
     }
 
-    static <U, R> Map<U, R> toMap(Storage<U, R> storage, Class<U> keyClass, Class<R> valueClass) {
-        return new MapFromStorage<>(keyClass, valueClass, storage);
+    /**
+     * Evict all entries
+     *
+     * The method must not return null value
+     *
+     * @param keys
+     */
+    void evictAll(Set<K> keys);
+
+    default void restore(K key, V value) throws FailedOperationException {
+        this.restoreAll(Map.of(key, value));
     }
+
+    void restoreAll(Map<K, V> entries) throws FailedOperationException ;
+
+    /**
+     * Events of the storage
+     * @return
+     */
+    StorageEvents<K, V> events();
+
+    /**
+     * returns an iterator for the storage.
+     *
+     * Whether the iterator directly iterates through the storage or only a set of copy is implementation dependent
+     *
+     * @return an iterator for the storage
+     */
+    Iterator<StorageEntry<K, V>> iterator();
+
+
 }

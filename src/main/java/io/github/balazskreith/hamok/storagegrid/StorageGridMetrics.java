@@ -1,8 +1,11 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-public class StorageGridMetrics {
+import java.time.Instant;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
-    private volatile int federatedStorages = 0;
+public abstract class StorageGridMetrics implements Supplier<StorageGridStats> {
+
     private volatile int replicatedStorages = 0;
     private volatile int separatedStorages = 0;
     private volatile long sentBytes = 0;
@@ -10,9 +13,7 @@ public class StorageGridMetrics {
     private volatile int sentMessages = 0;
     private volatile int receivedMessages = 0;
 
-    void incrementFederatedStorage() {
-        ++this.federatedStorages;
-    }
+    private AtomicReference<Snapshot> snapshot = new AtomicReference(null);
 
     void incrementReplicatedStorage() {
         ++this.replicatedStorages;
@@ -38,9 +39,6 @@ public class StorageGridMetrics {
         ++this.receivedMessages;
     }
 
-    void decrementFederatedStorage() {
-        --this.federatedStorages;
-    }
 
     void decrementReplicatedStorage() {
         --this.replicatedStorages;
@@ -50,16 +48,46 @@ public class StorageGridMetrics {
         --this.separatedStorages;
     }
 
+    protected abstract int pendingRequests();
+    protected abstract int pendingResponses();
 
-    public StorageGridStats makeSnapshot() {
-        return new StorageGridStats(
-                this.federatedStorages,
+    public StorageGridStats get() {
+        var snapshot = this.snapshot.get();
+        if (snapshot == null) {
+            snapshot = this.createSnapshot();
+            this.snapshot.set(snapshot);
+        }
+        var now = Instant.now().toEpochMilli();
+        if (now - 5000 < snapshot.created) {
+            return snapshot.stats;
+        }
+        snapshot = this.createSnapshot();
+        this.snapshot.set(snapshot);
+        return snapshot.stats;
+    }
+
+    private Snapshot createSnapshot() {
+        var created = Instant.now().toEpochMilli();
+        var stats = new StorageGridStats(
                 this.replicatedStorages,
                 this.separatedStorages,
                 this.sentBytes,
                 this.receivedBytes,
                 this.sentMessages,
-                this.receivedMessages
+                this.receivedMessages,
+                this.pendingRequests(),
+                this.pendingResponses()
         );
+        return new Snapshot(
+                created,
+                stats
+        );
+    }
+
+    private record Snapshot(
+            long created,
+            StorageGridStats stats
+    ) {
+
     }
 }

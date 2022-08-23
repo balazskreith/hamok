@@ -6,6 +6,7 @@ import io.github.balazskreith.hamok.common.UnmodifiableIterator;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BinaryOperator;
 import java.util.stream.Collectors;
 
 public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
@@ -18,13 +19,19 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 	private final StorageEventDispatcher<K, V> eventDispatcher = new StorageEventDispatcher<>();
 	private final RwLock rwLock = new RwLock();
 	private final String id;
+	private final BinaryOperator<V> mergeOp;
 
 	ConcurrentMemoryStorage() {
 		this(UUID.randomUUID().toString());
 	}
 
 	ConcurrentMemoryStorage(String id) {
+		this(id, (oldValue, newValue) -> newValue);
+	}
+
+	ConcurrentMemoryStorage(String id, BinaryOperator<V> mergeOp) {
 		this.id = id;
+		this.mergeOp = mergeOp;
 	}
 
 	@Override
@@ -92,12 +99,15 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 	public V set(K key, V value) {
 		AtomicReference<StorageEvent<K, V>> collectedEvent = new AtomicReference<>(null);
 		var result = this.rwLock.supplyInWriteLock(() -> {
-			var oldValue = this.map.put(key, value);
+			var oldValue = this.map.get(key);
 			StorageEvent<K, V> event;
 			if (oldValue == null) {
+				this.map.put(key, value);
 				event = StorageEvent.makeCreatedEntryEvent(this.id, key, value);
 			} else {
-				event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, value);
+				var newValue = this.mergeOp.apply(oldValue, value);
+				this.map.put(key, newValue);
+				event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
 			}
 			collectedEvent.set(event);
 			return oldValue;
@@ -118,19 +128,29 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 		var events = new LinkedList<StorageEvent<K, V>>();
 		var result = new HashMap<K, V>();
 		this.rwLock.runInWriteLock(() -> {
+			var inserts = new HashMap<K, V>();
+			var updates = new HashMap<K, V>();
 			for (var key : keys ) {
 				var oldValue = this.map.get(key);
 				var newValue = map.get(key);
 				StorageEvent<K, V> event;
 				if (oldValue == null) {
 					event = StorageEvent.makeCreatedEntryEvent(this.id, key, map.get(key));
+					inserts.put(key, newValue);
 				} else {
+					newValue = this.mergeOp.apply(oldValue, newValue);
 					event = StorageEvent.makeUpdatedEntryEvent(this.id, key, oldValue, newValue);
 					result.put(key, oldValue);
+					updates.put(key, newValue);
 				}
 				events.add(event);
 			}
-			this.map.putAll(map);
+			if (0 < inserts.size()) {
+				this.map.putAll(inserts);
+			}
+			if (0 < updates.size()) {
+				this.map.putAll(updates);
+			}
 		});
 		try {
 			return Collections.unmodifiableMap(result);
@@ -171,8 +191,62 @@ public class ConcurrentMemoryStorage<K, V> implements Storage<K, V> {
 			} finally {
 				events.forEach(this.eventDispatcher::accept);
 			}
-
 		});
+	}
+
+	@Override
+	public void evictAll(Set<K> keys) {
+		List<StorageEvent<K, V>> events = new LinkedList<>();
+		this.rwLock.runInWriteLock(() -> {
+			for (var it = keys.iterator(); it.hasNext(); ) {
+				var key = it.next();
+				var value = this.map.remove(key);
+				if (value == null) continue;
+				var event = StorageEvent.makeEvictedEntryEvent(this.id, key, value);
+				events.add(event);
+			}
+		});
+		events.forEach(this.eventDispatcher::accept);
+	}
+
+	@Override
+	public void restore(K key, V value) {
+		var event = this.rwLock.supplyInWriteLock(() -> {
+			if (this.map.containsKey(key)) {
+				var message = String.format("Cannot restore already presented entries. key: %s, value: %s", key.toString(), value.toString());
+				throw new FailedOperationException(message);
+			}
+			this.map.put(key, value);
+			return StorageEvent.makeRestoredEntryEvent(this.id, key, value);
+		});
+		this.eventDispatcher.accept(event);
+	}
+
+	@Override
+	public void restoreAll(Map<K, V> entries) {
+		var keys = entries.keySet();
+		var events = this.rwLock.supplyInWriteLock(() -> {
+			var result = new LinkedList<StorageEvent<K, V>>();
+			var restores = new HashMap<K, V>();
+			for (var key : keys ) {
+				var oldValue = this.map.get(key);
+				var restoredValue = entries.get(key);
+				if (oldValue != null) {
+					var message = String.format("Cannot restore already presented entries. key: %s, value: %s", key.toString(), oldValue.toString());
+					throw new FailedOperationException(message);
+				}
+				var event = StorageEvent.makeRestoredEntryEvent(this.id, key, restoredValue);
+				restores.put(key, restoredValue);
+				result.add(event);
+			}
+			if (0 < restores.size()) {
+				this.map.putAll(restores);
+			}
+			return result;
+		});
+		if (0 < events.size()) {
+			events.forEach(this.eventDispatcher::accept);
+		}
 	}
 
 

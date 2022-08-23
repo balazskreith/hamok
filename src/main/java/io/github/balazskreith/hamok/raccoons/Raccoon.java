@@ -1,11 +1,12 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.UuidTools;
+import io.github.balazskreith.hamok.raccoons.events.EndpointStatesNotification;
 import io.github.balazskreith.hamok.raccoons.events.Events;
 import io.github.balazskreith.hamok.raccoons.events.InboundEvents;
 import io.github.balazskreith.hamok.raccoons.events.OutboundEvents;
 import io.github.balazskreith.hamok.rxutils.RxAtomicReference;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
@@ -18,10 +19,10 @@ import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.time.Instant;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -29,13 +30,13 @@ public class Raccoon implements Disposable, Closeable {
 
     private static final Logger logger = LoggerFactory.getLogger(Raccoon.class);
 
+
     public static RaccoonBuilder builder() {
         return new RaccoonBuilder();
     }
 
     final RaftLogs logs;
     final RaccoonConfig config;
-    final Scheduler scheduler;
 
     final SyncedProperties syncProperties = new SyncedProperties();
     final RemotePeers remotePeers = new RemotePeers();
@@ -43,10 +44,13 @@ public class Raccoon implements Disposable, Closeable {
     final Events inboundEvents = new Events();
     final Events outboundEvents = new Events();
 
-    private final Subject<Integer> requestCommitIndexSync = PublishSubject.create();
-    private final Subject<Long> inactivatedLocalPeer = PublishSubject.create();
+    public Subject<LogEntry> committedEntries = PublishSubject.create();
+    private final Subject<CompletableFuture<Boolean>> requestStorageSync = PublishSubject.create();
     private final Subject<RaftState> changedState = PublishSubject.create();
+    private final Subject<UUID> inactiveRemotePeerId = PublishSubject.create();
     private final RxAtomicReference<UUID> actualLeaderId = new RxAtomicReference<>(null, UuidTools::equals);
+    private final Scheduler scheduler;
+//    private final RaccoonExecutors
     private final CompositeDisposable disposer;
 
     private AtomicReference<Disposable> timer = new AtomicReference<>(null);
@@ -73,7 +77,10 @@ public class Raccoon implements Disposable, Closeable {
                 logger.warn("No state is active, but got a request");
                 return;
             }
+//            var started = Instant.now().getEpochSecond();
             state.receiveRaftAppendEntriesRequestChunk(requestChunk);
+//            logger.info("Received {}", requestChunk);
+//            logger.info("receiveRaftAppendEntriesRequestChunk took {} sec", Instant.now().getEpochSecond() - started);
         }));
         this.disposer.add(this.inboundEvents.appendEntriesResponse().subscribe(response -> {
             var state = this.actual.get();
@@ -114,13 +121,17 @@ public class Raccoon implements Disposable, Closeable {
                 return;
             }
             state.receiveEndpointNotification(notification);
+            this.processEndpointStateNotification(notification);
+        }));
+
+        this.disposer.add(this.outboundEvents.endpointStateNotifications().subscribe(endpointStatesNotification -> {
+            this.processEndpointStateNotification(endpointStatesNotification);
         }));
 
         this.disposer.add(Disposable.fromRunnable(() -> {
             this.stop();
         }));
     }
-
 
     public void start() {
         if (this.timer.get() != null) {
@@ -129,6 +140,7 @@ public class Raccoon implements Disposable, Closeable {
         }
         Disposable timer = this.scheduler.createWorker().schedulePeriodically(() -> {
             var state = this.actual.get();
+//            logger.info("Running raccoon with thread id {}", Thread.currentThread().getId());
             if (state == null) {
                 logger.warn("{} No active state to execute", this.getId());
                 return;
@@ -175,15 +187,13 @@ public class Raccoon implements Disposable, Closeable {
 
     public Observable<RaftState> changedState() { return this.changedState.observeOn(Schedulers.computation()); }
 
-    public Observable<LogEntry> committedEntries() { return this.logs.committedEntries().observeOn(Schedulers.computation()); }
-
-    public Observable<Integer> commitIndexSyncRequests() { return this.requestCommitIndexSync.observeOn(Schedulers.computation()); }
+    public Observable<LogEntry> committedEntries() { return this.committedEntries.observeOn(Schedulers.single()); }
 
     public Observable<UUID> joinedRemotePeerId() { return this.remotePeers.joinedRemoteEndpointIds().observeOn(Schedulers.computation()); }
 
     public Observable<UUID> detachedRemotePeerId() { return this.remotePeers.detachedRemoteEndpointIds().observeOn(Schedulers.computation()); }
 
-    public Observable<Long> inactivatedLocalPeer() {return this.inactivatedLocalPeer.observeOn(Schedulers.computation()); }
+    public Observable<UUID> inactiveRemotePeerId() { return this.inactiveRemotePeerId; }
 
     /**
      * Returns the index of the entry submitted to the leader
@@ -192,7 +202,7 @@ public class Raccoon implements Disposable, Closeable {
      * @param entry
      * @return
      */
-    public boolean submit(Message entry) {
+    public boolean submit(Models.Message entry) {
         var state = this.actual.get();
         if (state == null) {
             return false;
@@ -242,8 +252,16 @@ public class Raccoon implements Disposable, Closeable {
         return this.logs.getCommitIndex();
     }
 
+    public int getNumberOfCommits() {
+        return this.logs.size();
+    }
+
+    public int getLastApplied() {
+        return this.logs.getLastApplied();
+    }
+
     public Set<UUID> getRemoteEndpointIds() {
-        return this.remotePeers.getActiveRemotePeerIds();
+        return this.remotePeers.getRemotePeerIds();
     }
 
     public void addRemotePeerId(UUID peerId) {
@@ -254,19 +272,21 @@ public class Raccoon implements Disposable, Closeable {
         this.remotePeers.detach(peerId);
     }
 
-    void signalInactivatedLocalPeer() {
-        this.inactivatedLocalPeer.onNext(Instant.now().toEpochMilli());
-    }
-
     void setActualLeaderId(UUID actualLeaderId) {
         this.actualLeaderId.set(actualLeaderId);
     }
 
-    void requestCommitIndexSync() {
-        if (!this.requestCommitIndexSync.hasObservers()) {
+    CompletableFuture<Boolean> requestStorageSync() {
+        if (!this.requestStorageSync.hasObservers()) {
             throw new IllegalStateException("If log entries are disappeared by the server, the application MUST provide a way to synchronize entries");
         }
-        this.requestCommitIndexSync.onNext(1);
+        var result = new CompletableFuture<Boolean>();
+        this.requestStorageSync.onNext(result);
+        return result;
+    }
+
+    public Observable<CompletableFuture<Boolean>> requestedStorageSync() {
+        return this.requestStorageSync;
     }
 
     void changeState(AbstractState successor) {
@@ -288,5 +308,16 @@ public class Raccoon implements Disposable, Closeable {
             logger.debug("{} Changed state from {} to {}", this.getId(), state.getState(), successor.getState());
         }
         successor.start();
+    }
+
+    private void processEndpointStateNotification(EndpointStatesNotification notification) {
+        var reportedActivePeerIds = notification.activeEndpointIds();
+        var remotePeerIds = this.remotePeers.getRemotePeerIds();
+        for (var remotePeerId : remotePeerIds) {
+            if (!reportedActivePeerIds.contains(remotePeerId)) {
+                // inactive remote peer id
+                this.inactiveRemotePeerId.onNext(remotePeerId);
+            }
+        }
     }
 }

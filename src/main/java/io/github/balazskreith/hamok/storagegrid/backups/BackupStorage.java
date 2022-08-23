@@ -1,5 +1,6 @@
 package io.github.balazskreith.hamok.storagegrid.backups;
 
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.core.Observable;
 
 import java.util.Map;
@@ -12,6 +13,8 @@ public interface BackupStorage<K, V> extends AutoCloseable {
     static<U, R> BackupStorageBuilder<U, R> builder() {
         return new BackupStorageBuilder<>();
     }
+
+    void receiveMessage(Message message);
 
     /**
      * Missing keys due to external events (remote endpoint detached)

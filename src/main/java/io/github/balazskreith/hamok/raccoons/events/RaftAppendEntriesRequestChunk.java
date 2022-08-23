@@ -23,6 +23,7 @@ public record RaftAppendEntriesRequestChunk(
                 return new RaftAppendEntriesResponse(
                         this.peerId,
                         this.leaderId,
+                        this.requestId,
                         this.term,
                         success,
                         peerNextIndex,

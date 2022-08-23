@@ -1,5 +1,6 @@
 package io.github.balazskreith.hamok.storagegrid;
 
+import io.github.balazskreith.hamok.FailedOperationException;
 import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.UuidTools;
@@ -16,16 +17,19 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 public class StorageEndpoint<K, V> implements Disposable {
+    private static final Integer ZERO = 0;
     private static final Logger logger = LoggerFactory.getLogger(StorageEndpoint.class);
 
     // assigned by the grid
     StorageGrid grid;
     Supplier<Depot<Map<K, V>>> depotProvider;
     Supplier<Set<UUID>> defaultResolvingEndpointIds;
+    Function<Message, Iterator<Message>> responseMessageChunker;
 
     StorageOpSerDe<K, V> messageSerDe;
     String storageId;
@@ -34,6 +38,8 @@ public class StorageEndpoint<K, V> implements Disposable {
     final Disposer disposer;
     // created by the constructor
     private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
+    private final Map<UUID, PendingResponse> pendingResponses = new ConcurrentHashMap<>();
+
     private final Subject<Message> requestsDispatcherSubject = PublishSubject.create();
 
     private final Subject<Message> getEntriesRequestSubject = PublishSubject.create();
@@ -43,9 +49,12 @@ public class StorageEndpoint<K, V> implements Disposable {
     private final Subject<Message> insertEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> updateEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> deleteEntriesNotificationSubject = PublishSubject.create();
+    private final Subject<Message> removeEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> getSizeRequestSubject = PublishSubject.create();
     private final Subject<Message> getKeysRequestSubject = PublishSubject.create();
     private final Subject<Message> clearEntriesNotificationSubject = PublishSubject.create();
+
+
 
     StorageEndpoint() {
         this.disposer = Disposer.builder()
@@ -64,6 +73,7 @@ public class StorageEndpoint<K, V> implements Disposable {
                 .addSubject(this.deleteEntriesNotificationSubject)
                 .addSubject(this.updateEntriesRequestSubject)
                 .addSubject(this.insertEntriesRequestSubject)
+                .addSubject(this.removeEntriesNotificationSubject)
                 .addSubject(this.getSizeRequestSubject)
                 .addSubject(this.getKeysRequestSubject)
                 .addSubject(this.clearEntriesNotificationSubject)
@@ -75,7 +85,6 @@ public class StorageEndpoint<K, V> implements Disposable {
 
     void init() {
         this.disposer.add(this.grid.detachedRemoteEndpoints().subscribe(detachedEndpointId -> {
-            logger.info("Detached endpoint: {}", detachedEndpointId);
             for (var pendingRequest : this.pendingRequests.values()) {
 //                logger.warn("Removing {} endpoint from pending Request: {}", detachedEndpointId, pendingRequest);
                 pendingRequest.removeEndpointId(detachedEndpointId);
@@ -95,7 +104,7 @@ public class StorageEndpoint<K, V> implements Disposable {
         return this.grid.getLocalEndpointId();
     }
 
-    void receive(Message message) {
+    public void receive(Message message) {
         if (message.protocol != null && !message.protocol.equals(this.protocol)) {
             logger.debug("Ignore received message {}, message protocol: {}, endpoint protocol: {}", message.type, message.protocol, this.protocol);
             // this is not for this endpoint
@@ -114,6 +123,7 @@ public class StorageEndpoint<K, V> implements Disposable {
             case GET_SIZE_REQUEST -> this.getSizeRequestSubject.onNext(message);
             case GET_KEYS_REQUEST -> this.getKeysRequestSubject.onNext(message);
             case CLEAR_ENTRIES_NOTIFICATION -> this.clearEntriesNotificationSubject.onNext(message);
+            case REMOVE_ENTRIES_NOTIFICATION -> this.removeEntriesNotificationSubject.onNext(message);
             case DELETE_ENTRIES_RESPONSE,
                     GET_ENTRIES_RESPONSE,
                     GET_SIZE_RESPONSE,
@@ -132,6 +142,10 @@ public class StorageEndpoint<K, V> implements Disposable {
             message.storageId = this.storageId;
             return message;
         });
+    }
+
+    UUID getLeaderId() {
+        return this.grid.getLeaderId();
     }
 
     boolean isLeaderEndpoint() {
@@ -201,6 +215,13 @@ public class StorageEndpoint<K, V> implements Disposable {
         return this;
     }
 
+    public StorageEndpoint<K, V> onRemoveEntriesNotification(Consumer<RemoveEntriesNotification<K, V>> listener) {
+        this.updateEntriesNotificationSubject
+                .map(this.messageSerDe::deserializeRemoveEntriesNotification)
+                .subscribe(listener);
+        return this;
+    }
+
     public StorageEndpoint<K, V> onGetEntriesRequest(Consumer<GetEntriesRequest<K>> listener) {
         this.getEntriesRequestSubject
                 .map(this.messageSerDe::deserializeGetEntriesRequest)
@@ -228,9 +249,13 @@ public class StorageEndpoint<K, V> implements Disposable {
     }
 
     public int requestGetSize() {
+        return this.requestGetSize(null);
+    }
+
+    public int requestGetSize(Set<UUID> destinationEndpointIds) {
         var request = new GetSizeRequest(UUID.randomUUID(), null);
         var message = this.messageSerDe.serializeGetSizeRequest(request);
-        var sum = this.request(message).stream()
+        var sum = this.request(message, destinationEndpointIds).stream()
                 .map(this.messageSerDe::deserializeGetSizeResponse)
                 .map(GetSizeResponse::size)
                 .reduce((r, i) -> r + i);
@@ -242,7 +267,7 @@ public class StorageEndpoint<K, V> implements Disposable {
 
     public void sendGetSizeResponse(GetSizeResponse response) {
         var message = this.messageSerDe.serializeGetSizeResponse(response);
-        this.send(message);
+        this.sendResponse(message);
     }
 
     public StorageEndpoint<K, V> onGetKeysRequest(Consumer<GetKeysRequest> listener) {
@@ -253,9 +278,13 @@ public class StorageEndpoint<K, V> implements Disposable {
     }
 
     public Set<K> requestGetKeys() {
+        return this.requestGetKeys(null);
+    }
+
+    public Set<K> requestGetKeys(Set<UUID> destinationEndpointIds) {
         var request = new GetKeysRequest(UUID.randomUUID(), null);
         var message = this.messageSerDe.serializeGetKeysRequest(request);
-        return this.request(message).stream()
+        return this.request(message, destinationEndpointIds).stream()
                 .map(this.messageSerDe::deserializeGetKeysResponse)
                 .map(GetKeysResponse::keys)
                 .flatMap(Set::stream)
@@ -264,16 +293,20 @@ public class StorageEndpoint<K, V> implements Disposable {
 
     public void sendGetKeysResponse(GetKeysResponse<K> response) {
         var message = this.messageSerDe.serializeGetKeysResponse(response);
-        this.send(message);
+        this.sendResponse(message);
     }
 
     public Map<K, V> requestGetEntries(Set<K> keys) {
+        return this.requestGetEntries(keys, null);
+    }
+
+    public Map<K, V> requestGetEntries(Set<K> keys, Set<UUID> destinationEndpointIds) {
         var request = GetEntriesRequest.<K>builder()
                 .setKeys(keys)
                 .build();
         var message = this.messageSerDe.serializeGetEntriesRequest(request);
         var depot = depotProvider.get();
-        var responses = this.request(message);
+        var responses = this.request(message, destinationEndpointIds);
         responses.stream()
                 .map(this.messageSerDe::deserializeGetEntriesResponse)
                 .map(GetEntriesResponse::foundEntries)
@@ -287,15 +320,19 @@ public class StorageEndpoint<K, V> implements Disposable {
     public void sendGetEntriesResponse(GetEntriesResponse<K, V> response) {
         var message = this.messageSerDe.serializeGetEntriesResponse(response);
         logger.debug("{} sending {} response to {}", this.grid.getLocalEndpointId().toString().substring(0, 8), message.type, message.destinationId);
-        this.send(message);
+        this.sendResponse(message);
     }
 
     public Set<K> requestDeleteEntries(Set<K> keys) {
+        return this.requestDeleteEntries(keys, null);
+    }
+
+    public Set<K> requestDeleteEntries(Set<K> keys, Set<UUID> destinationEndpointIds) {
         var request = DeleteEntriesRequest.<K>builder()
                 .setKeys(keys)
                 .build();
         var message = this.messageSerDe.serializeDeleteEntriesRequest(request);
-        return this.request(message).stream()
+        return this.request(message, destinationEndpointIds).stream()
                 .map(this.messageSerDe::deserializeDeleteEntriesResponse)
                 .map(DeleteEntriesResponse::deletedKeys)
                 .flatMap(Set::stream)
@@ -309,7 +346,7 @@ public class StorageEndpoint<K, V> implements Disposable {
 
     public void sendDeleteEntriesResponse(DeleteEntriesResponse<K> response) {
         var message = this.messageSerDe.serializeDeleteEntriesResponse(response);
-        this.send(message);
+        this.sendResponse(message);
     }
 
     public void sendUpdateEntriesNotification(UpdateEntriesNotification<K, V> notification) {
@@ -317,13 +354,22 @@ public class StorageEndpoint<K, V> implements Disposable {
         this.send(message);
     }
 
+    public void sendRemoveEntriesNotification(RemoveEntriesNotification<K, V> notification) {
+        var message = this.messageSerDe.serializeRemoveEntriesNotification(notification);
+        this.send(message);
+    }
+
     public Map<K, V> requestUpdateEntries(Map<K, V> entries) {
+        return this.requestUpdateEntries(entries, null);
+    }
+
+    public Map<K, V> requestUpdateEntries(Map<K, V> entries, Set<UUID> destinationEndpointIds) {
         var request = UpdateEntriesRequest.<K, V>builder()
                 .setEntries(entries)
                 .build();
         var message = this.messageSerDe.serializeUpdateEntriesRequest(request);
         var depot = depotProvider.get();
-        this.request(message).stream()
+        this.request(message, destinationEndpointIds).stream()
                 .map(this.messageSerDe::deserializeUpdateEntriesResponse)
                 .map(UpdateEntriesResponse::entries)
                 .forEach(depot::accept);
@@ -331,10 +377,14 @@ public class StorageEndpoint<K, V> implements Disposable {
     }
 
     public Map<K, V> requestInsertEntries(Map<K, V> entries) {
+        return this.requestInsertEntries(entries, null);
+    }
+
+    public Map<K, V> requestInsertEntries(Map<K, V> entries, Set<UUID> destinationEndpointIds) {
         var request = new InsertEntriesRequest(UUID.randomUUID(), entries, this.grid.getLocalEndpointId());
         var message = this.messageSerDe.serializeInsertEntriesRequest(request);
         var depot = depotProvider.get();
-        this.request(message).stream()
+        this.request(message, destinationEndpointIds).stream()
                 .map(this.messageSerDe::deserializeInsertEntriesResponse)
                 .map(InsertEntriesResponse::existingEntries)
                 .forEach(depot::accept);
@@ -348,18 +398,34 @@ public class StorageEndpoint<K, V> implements Disposable {
 
     public void sendInsertEntriesResponse(InsertEntriesResponse<K, V> response) {
         var message = this.messageSerDe.serializeInsertEntriesResponse(response);
-        this.send(message);
+        this.sendResponse(message);
     }
 
     public void sendUpdateEntriesResponse(UpdateEntriesResponse<K, V> response) {
         var message = this.messageSerDe.serializeUpdateEntriesResponse(response);
-        this.send(message);
+        this.sendResponse(message);
     }
 
     private void processResponse(Message message) {
         if (message.requestId == null) {
             logger.warn("RequestId is null in response {}", message);
             return;
+        }
+
+        var chunkedResponse = message.sequence != null && message.lastMessage != null;
+        var onlyOneChunkExists = ZERO.equals(message.sequence) && Boolean.TRUE.equals(message.lastMessage);
+        if (chunkedResponse && !onlyOneChunkExists) {
+            var pendingResponse = this.pendingResponses.get(message.requestId);
+            if (pendingResponse == null) {
+                pendingResponse = new PendingResponse();
+                this.pendingResponses.put(message.requestId, pendingResponse);
+            }
+            pendingResponse.accept(message);
+            if (!pendingResponse.isReady()) {
+                return;
+            }
+            message = pendingResponse.getResult();
+            this.pendingResponses.remove(message.requestId);
         }
         logger.trace("{} Receiving message for request id {} for type: {}", this.grid.getLocalEndpointId(), message.requestId, message.type);
         var pendingRequest = this.pendingRequests.get(message.requestId);
@@ -370,21 +436,25 @@ public class StorageEndpoint<K, V> implements Disposable {
         pendingRequest.accept(message);
     }
 
-    private List<Message> request(Message message) {
-        return this.request(message, 0);
+    private List<Message> request(Message message, Set<UUID> destinationEndpointIds) throws FailedOperationException {
+        return this.request(message, destinationEndpointIds, 0);
     }
 
-    private List<Message> request(Message message, int retried) {
+    private List<Message> request(Message message, Set<UUID> destinationEndpointIds, int retried) throws FailedOperationException {
         if (3 < retried) {
-            logger.error("Cannot resolve request {}", message);
-            return Collections.emptyList();
+            throw new FailedOperationException("Cannot resolve request " + message);
         }
         var requestId = message.requestId;
         Set<UUID> remoteEndpointIds;
-        if (message.destinationId != null) {
+        if (destinationEndpointIds != null && 0 < destinationEndpointIds.size()) {
+            remoteEndpointIds = destinationEndpointIds;
+        } else if (message.destinationId != null) {
             remoteEndpointIds = Set.of(message.destinationId);
         } else {
             remoteEndpointIds = this.defaultResolvingEndpointIds.get();
+        }
+        if (remoteEndpointIds != null && remoteEndpointIds.size() == 1) {
+            message.destinationId = remoteEndpointIds.stream().findFirst().get();
         }
         logger.debug("Creating request ({}) ({} - {}) remote endpoints: {}", requestId, this.grid.getLocalEndpointId(), this.grid.getContext(), remoteEndpointIds);
         if (remoteEndpointIds.size() < 1) {
@@ -401,33 +471,72 @@ public class StorageEndpoint<K, V> implements Disposable {
         this.pendingRequests.put(requestId, pendingRequest);
 
         logger.debug("Sending request (type: {}, id: {}), PendingRequest: {}", message.type, requestId, pendingRequest);
-        this.requestsDispatcherSubject.onNext(message);
+//        Schedulers.io().scheduleDirect(() -> {
+            this.requestsDispatcherSubject.onNext(message);
+//        });
+
         try {
+//            logger.info("pendingRequest.get {}", Thread.currentThread().getId());
             var result =  pendingRequest.get();
             this.pendingRequests.remove(requestId);
             logger.debug("Request {} (type: {}) is removed", requestId, message.type);
             return result;
         } catch (ExecutionException e) {
-            logger.warn("Error occurred while processing request {} ", requestId , e);
+            logger.warn("Error occurred while processing request {} on endpoint {}, message type {}, protocol: {}",
+                    requestId,
+                    this.getLocalEndpointId(),
+                    message.type,
+                    message.protocol,
+                    e
+            );
             this.pendingRequests.remove(requestId);
             message.requestId = UUID.randomUUID();
-            return this.request(message, retried + 1);
+            return this.request(message, destinationEndpointIds, retried + 1);
         } catch (InterruptedException e) {
-            logger.warn("Error occurred while processing request {} ", requestId, e);
+            logger.warn("Error occurred while processing request {} on endpoint {}, message type {}, protocol: {}",
+                    requestId,
+                    this.getLocalEndpointId(),
+                    message.type,
+                    message.protocol,
+                    e
+            );
             this.pendingRequests.remove(requestId);
             message.requestId = UUID.randomUUID();
-            return this.request(message, retried + 1);
+            return this.request(message, destinationEndpointIds, retried + 1);
         } catch (TimeoutException e) {
-            logger.warn("Timeout occurred while processing request {} ", requestId, e);
+            logger.warn("Timeout occurred while processing request {} on endpoint {}, message type {}, protocol: {}",
+                    requestId,
+                    this.getLocalEndpointId(),
+                    message.type,
+                    message.protocol,
+                    e
+            );
             this.pendingRequests.remove(requestId);
             message.requestId = UUID.randomUUID();
-            return this.request(message, retried + 1);
+            return this.request(message, destinationEndpointIds, retried + 1);
+        }
+    }
+
+    private void sendResponse(Message message) {
+        var it = this.responseMessageChunker.apply(message);
+        if (it == null) {
+            logger.warn("No iterator returned to chunk response. the response itself will be sent unchunked");
+            this.send(message);
+            return;
+        }
+        while (it.hasNext()) {
+            var chunk = it.next();
+            this.send(chunk);
         }
     }
 
     private void send(Message message) {
         message.storageId = this.storageId;
         message.protocol = this.protocol;
+        if (message.sourceId != null && message.destinationId != null && UuidTools.equals(message.sourceId, message.destinationId)) {
+            this.receive(message);
+            return;
+        }
         this.grid.send(message);
     }
 

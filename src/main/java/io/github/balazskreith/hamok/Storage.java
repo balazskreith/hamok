@@ -138,6 +138,32 @@ public interface Storage<K, V> extends AutoCloseable {
      */
     Set<K> deleteAll(Set<K> keys);
 
+    /**
+     * Evict entry belong to the given key
+     *
+     * @param key
+     * @return true if the key existed, false if it was not
+     */
+    default void evict(K key) {
+        this.evictAll(Set.of(key));
+    }
+
+    /**
+     * Evict all entries
+     *
+     * The method must not return null value
+     *
+     * @param keys
+     * @return the set of keys deleted from the storage
+     */
+    void evictAll(Set<K> keys);
+
+    default void restore(K key, V value) throws FailedOperationException {
+        this.restoreAll(Map.of(key, value));
+    }
+
+    void restoreAll(Map<K, V> entries) throws FailedOperationException ;
+
 
     static <U, R> Storage<U, R> fromMap(Map<U, R> map, String storageId) {
         return new StorageFromMap<U, R>(storageId, map);

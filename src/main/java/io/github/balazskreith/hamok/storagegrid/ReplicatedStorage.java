@@ -1,9 +1,9 @@
 package io.github.balazskreith.hamok.storagegrid;
 
+import io.github.balazskreith.hamok.CollectedStorageEvents;
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.StorageEntry;
 import io.github.balazskreith.hamok.StorageEvents;
-import io.github.balazskreith.hamok.common.BatchCollector;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.reactivex.rxjava3.schedulers.Schedulers;
@@ -11,7 +11,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
@@ -27,13 +26,19 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
     private final Disposer disposer;
     private volatile boolean standalone;
     private final ReplicatedStorageConfig config;
+    private final CollectedStorageEvents<K, V> collectedEvents;
+    private final InputStreamer<K, V> inputStreamer;
 
     ReplicatedStorage(Storage<K, V> storage, StorageEndpoint<K, V> endpoint, ReplicatedStorageConfig config) {
         this.config = config;
         this.storage = storage;
         this.standalone = endpoint.getRemoteEndpointIds().size() < 1;
         this.endpoint = endpoint
-            .onGetEntriesRequest(getEntriesRequest -> {
+            .onGetKeysRequest(request -> {
+                var keys = this.storage.keys();
+                var response = request.createResponse(keys);
+                this.endpoint.sendGetKeysResponse(response);
+            }).onGetEntriesRequest(getEntriesRequest -> {
                 var entries = this.storage.getAll(getEntriesRequest.keys());
                 var response = getEntriesRequest.createResponse(entries);
                 this.endpoint.sendGetEntriesResponse(response);
@@ -82,7 +87,7 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                 if (0 < entries.size()) {
                     oldEntries = this.storage.insertAll(entries);
                 }
-                logger.trace("Receiving request to insert {} entries from {} on endpoint {}", entries.size(), request.sourceEndpointId(), this.endpoint.getLocalEndpointId());
+                logger.debug("Receiving request ({}) to insert {} entries from {} on endpoint {}", request.requestId(), entries.size(), request.sourceEndpointId(), this.endpoint.getLocalEndpointId());
                 // only the same endpoint can resolve in replicated storage
                 if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
                     var response = request.createResponse(oldEntries);
@@ -106,16 +111,8 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                     return;
                 }
                 var entries = this.storage.getAll(keys);
-                Map<K, V> insertedEntries = new HashMap<>();
-                entries.entrySet().stream().collect(this.makeBatchCollectorForEntrySet(batchedEntrySet -> {
-                    var batchedEntries = batchedEntrySet.stream().collect(Collectors.toMap(
-                            Map.Entry::getKey,
-                            Map.Entry::getValue
-                    ));
-                    logger.trace("Creating request to insert {} entries from {}", batchedEntrySet.size(), this.endpoint.getLocalEndpointId());
-                    var insertedEntriesBatch = this.endpoint.requestInsertEntries(batchedEntries);
-                    insertedEntries.putAll(insertedEntriesBatch);
-                }));
+                logger.trace("Creating request to insert {} entries from {}", entries.size(), this.endpoint.getLocalEndpointId());
+                var insertedEntries = this.endpoint.requestInsertEntries(entries);
                 insertedEntries.keySet().stream()
                     .filter(key -> !keys.contains(key))
                     .forEach(key -> {
@@ -123,7 +120,7 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                     });
             });
 
-        var collectedEvents = this.storage.events()
+        this.collectedEvents = this.storage.events()
                 .collectOn(Schedulers.io(), config.maxCollectedActualStorageTimeInMs(), config.maxCollectedActualStorageEvents());
 
         this.disposer = Disposer.builder()
@@ -141,6 +138,11 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                     // evicted items from local storage happens when clear is called.
                 }))
                 .build();
+        this.inputStreamer = new InputStreamer<>(config.maxMessageKeys(), config.maxMessageValues());
+    }
+
+    public CollectedStorageEvents<K, V> collectedEvents() {
+        return this.collectedEvents;
     }
 
     @Override
@@ -181,16 +183,14 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         if (this.standalone) {
             return this.storage.setAll(entries);
         }
-        Map<K, V> result = new HashMap<>();
-        entries.entrySet().stream().collect(this.makeBatchCollectorForEntrySet(batchedEntrySet -> {
-            var batchedEntries = batchedEntrySet.stream().collect(Collectors.toMap(
-                    Map.Entry::getKey,
-                    Map.Entry::getValue
-            ));
-            var insertedEntries = this.endpoint.requestUpdateEntries(batchedEntries);
-            result.putAll(insertedEntries);
-        }));
-        return result;
+        return this.inputStreamer.streamEntries(entries)
+                .map(requestedEntries -> this.endpoint.requestUpdateEntries(requestedEntries))
+                .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
+//        return this.endpoint.requestUpdateEntries(entries);
     }
 
     @Override
@@ -214,12 +214,12 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         } else if (this.standalone) {
             return this.storage.deleteAll(keys);
         }
-        Set<K> result = new HashSet<>();
-        keys.stream().collect(this.makeBatchCollectorForKeys(batchedKeys -> {
-            var deletedKeys = this.endpoint.requestDeleteEntries(keys);
-            result.addAll(deletedKeys);
-        }));
-        return result;
+        return this.inputStreamer.streamKeys(keys)
+                .map(requestedKeys -> this.endpoint.requestDeleteEntries(requestedKeys))
+                .flatMap(respondedKeys -> respondedKeys.stream())
+                .collect(Collectors.toSet());
+//        Set<K> result = this.endpoint.requestDeleteEntries(keys);
+//        return result;
     }
 
 
@@ -231,16 +231,14 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         if (this.standalone) {
             return this.storage.insertAll(entries);
         }
-        Map<K, V> result = new HashMap<>();
-        entries.entrySet().stream().collect(this.makeBatchCollectorForEntrySet(batchedEntrySet -> {
-            var batchedEntries = batchedEntrySet.stream().collect(Collectors.toMap(
-                    Map.Entry::getKey,
-                    Map.Entry::getValue
-            ));
-            var insertedEntries = this.endpoint.requestInsertEntries(batchedEntries);
-            result.putAll(insertedEntries);
-        }));
-        return result;
+        return this.inputStreamer.streamEntries(entries)
+                .map(requestedEntries -> this.endpoint.requestInsertEntries(requestedEntries))
+                .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
+//        return this.endpoint.requestInsertEntries(entries);
     }
 
     @Override
@@ -301,26 +299,66 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         this.storage.clear();
     }
 
+    @Override
+    public void evict(K key) {
+        throw new RuntimeException("evict operation is not allowed");
+    }
+
+    @Override
+    public void evictAll(Set<K> keys) {
+        throw new RuntimeException("evict operation is not allowed");
+    }
+
+    @Override
+    public void restoreAll(Map<K, V> entries) {
+        throw new RuntimeException("restore operation is not allowed for replicated storage");
+    }
+
+    public boolean isJoined() {
+        return this.standalone == false;
+    }
+
     public ReplicatedStorageConfig getConfig() {
         return this.config;
     }
 
-    private BatchCollector<K, Set<K>> makeBatchCollectorForKeys(Consumer<Set<K>> consumer) {
-        return BatchCollector.builder()
-                .withEmptyCollectionSupplier(Collections::emptySet)
-                .withMutableCollectionSupplier(HashSet::new)
-                .withBatchSize(Math.min(this.config.maxMessageKeys(), this.config.maxMessageValues()))
-                .withConsumer(consumer)
-                .build();
+    private boolean executeSync() {
+        var leaderId = this.endpoint.getLeaderId();
+        if (leaderId == null) {
+            return false;
+        }
+
+        var destinationIds = Set.of(leaderId);
+        var keys = this.endpoint.requestGetKeys(destinationIds);
+        var entries = this.endpoint.requestGetEntries(keys, destinationIds);
+
+        var storageSizeBefore = this.storage.size();
+        this.storage.clear();
+        this.storage.setAll(entries);
+        var storageSizeAfter = this.storage.size();
+        logger.info("Executed storage sync on {}. old storage size: {}, new storage size: {}, leader: {}",
+                this.storage.getId(),
+                storageSizeBefore,
+                storageSizeAfter,
+                leaderId
+        );
+        return true;
     }
 
-    private BatchCollector<Map.Entry<K, V>, List<Map.Entry<K, V>>> makeBatchCollectorForEntrySet(Consumer<List<Map.Entry<K, V>>> consumer) {
-        var batchSize = Math.min(this.config.maxMessageKeys(), this.config.maxMessageValues());
-        return BatchCollector.builder()
-                .withEmptyCollectionSupplier(Collections::emptyList)
-                .withMutableCollectionSupplier(ArrayList::new)
-                .withBatchSize(batchSize)
-                .withConsumer(consumer)
+    static<U, R> GridActor createGridMember(ReplicatedStorage<U, R> subject) {
+        var storage = subject.storage;
+        var endpoint = subject.endpoint;
+        return GridActor.builder()
+                .setIdentifier(endpoint.getStorageId())
+                .setMessageAcceptor(endpoint::receive)
+                .setCloseAction(() -> {
+                    try {
+                        storage.close();
+                    } catch (Exception e) {
+                        logger.warn("Error occurred while closing storage {}", storage.getId(), e);
+                    }
+                })
+                .setSyncExecutor(subject::executeSync)
                 .build();
     }
 }

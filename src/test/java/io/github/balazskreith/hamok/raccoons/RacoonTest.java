@@ -48,7 +48,26 @@ class RacoonTest {
         logger.info("\n\n ---- Test 2 ----- \n\n");
         var racoon_1 = Raccoon.builder().withConfig(this.createConfig()).build();
         var racoon_2 = Raccoon.builder().withConfig(this.createConfig()).build();
-
+        racoon_1.syncRequests().subscribe(signal -> {
+            logger.info("Raccoon {} requested a sync", racoon_1.getId());
+            signal.complete(true);
+        });
+        racoon_1.joinedRemotePeerId().subscribe(remotePeerId -> {
+//            logger.info("\n\n remote peer id {} joined to {} \n\n", remotePeerId, racoon_1.getId());
+        });
+        racoon_1.detachedRemotePeerId().subscribe(remotePeerId -> {
+            logger.info("\n remote peer id {} detached from {} \n", remotePeerId, racoon_1.getId());
+        });
+        racoon_2.syncRequests().subscribe(signal -> {
+            logger.info("Raccoon {} requested a sync", racoon_2.getId());
+            signal.complete(true);
+        });
+        racoon_2.joinedRemotePeerId().subscribe(remotePeerId -> {
+            logger.info("\n remote peer id {} joined to {} \n", remotePeerId, racoon_2.getId());
+        });
+        racoon_2.detachedRemotePeerId().subscribe(remotePeerId -> {
+            logger.info("\n remote peer id {} detached from {} \n", remotePeerId, racoon_2.getId());
+        });
         this.router.add(racoon_1.getId(), racoon_1);
         this.router.add(racoon_2.getId(), racoon_2);
 
@@ -70,7 +89,17 @@ class RacoonTest {
     void test_3() throws InterruptedException {
         logger.info("\n\n ---- Test 3 ----- \n\n");
         var newRacoon = Raccoon.builder().withConfig(this.createConfig()).build();
+        newRacoon.syncRequests().subscribe(signal -> {
+            logger.info("Raccoon {} requested a sync", newRacoon.getId());
+            signal.complete(true);
+        });
+        newRacoon.joinedRemotePeerId().subscribe(remotePeerId -> {
+            logger.info("\n remote peer id {} joined to {} \n", remotePeerId, newRacoon.getId());
+        });
 
+        newRacoon.detachedRemotePeerId().subscribe(remotePeerId -> {
+            logger.info("\n remote peer id {} detached from {} \n", remotePeerId, newRacoon.getId());
+        });
         this.router.add(newRacoon.getId(), newRacoon);
 
         newRacoon.start();
@@ -115,11 +144,11 @@ class RacoonTest {
 
         Assertions.assertTrue(this.stopped.getState() == RaftState.FOLLOWER);
 
-        if (this.follower_1== null) {
+        if (this.follower_1 == null) {
             this.follower_1 = this.stopped;
             this.stopped = null;
         }
-        if (this.follower_2== null) {
+        if (this.follower_2 == null) {
             this.follower_2 = this.stopped;
             this.stopped = null;
         }
@@ -160,11 +189,11 @@ class RacoonTest {
 
         Assertions.assertTrue(this.stopped.getState() == RaftState.FOLLOWER);
 
-        if (this.follower_1== null) {
+        if (this.follower_1 == null) {
             this.follower_1 = this.stopped;
             this.stopped = null;
         }
-        if (this.follower_2== null) {
+        if (this.follower_2 == null) {
             this.follower_2 = this.stopped;
             this.stopped = null;
         }

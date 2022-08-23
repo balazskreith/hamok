@@ -2,7 +2,7 @@ package io.github.balazskreith.hamok.storagegrid;
 
 public class StorageGridMetrics {
 
-    private volatile int federatedStorages = 0;
+    private volatile int propagatedCollections = 0;
     private volatile int replicatedStorages = 0;
     private volatile int separatedStorages = 0;
     private volatile long sentBytes = 0;
@@ -10,8 +10,8 @@ public class StorageGridMetrics {
     private volatile int sentMessages = 0;
     private volatile int receivedMessages = 0;
 
-    void incrementFederatedStorage() {
-        ++this.federatedStorages;
+    void incrementPropagatedCollections() {
+        ++this.propagatedCollections;
     }
 
     void incrementReplicatedStorage() {
@@ -38,8 +38,8 @@ public class StorageGridMetrics {
         ++this.receivedMessages;
     }
 
-    void decrementFederatedStorage() {
-        --this.federatedStorages;
+    void decrementPropagatedCollections() {
+        --this.propagatedCollections;
     }
 
     void decrementReplicatedStorage() {
@@ -53,7 +53,7 @@ public class StorageGridMetrics {
 
     public StorageGridStats makeSnapshot() {
         return new StorageGridStats(
-                this.federatedStorages,
+                this.propagatedCollections,
                 this.replicatedStorages,
                 this.separatedStorages,
                 this.sentBytes,

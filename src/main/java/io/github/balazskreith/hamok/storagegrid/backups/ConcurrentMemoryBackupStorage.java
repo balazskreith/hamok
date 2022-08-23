@@ -4,6 +4,7 @@ import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.storagegrid.StorageEndpoint;
 import io.github.balazskreith.hamok.storagegrid.messages.DeleteEntriesNotification;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.github.balazskreith.hamok.storagegrid.messages.UpdateEntriesNotification;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.subjects.PublishSubject;
@@ -65,6 +66,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         });
         var remoteEndpointsList = this.endpoint.getRemoteEndpointIds().stream().collect(Collectors.toList());
         this.setRemoteEndpoints(remoteEndpointsList);
+        logger.debug("Backup storage for {} is created", this.endpoint.getStorageId());
     }
 
 
@@ -79,7 +81,13 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             this.save(this.bufferedEntries);
             this.bufferedEntries.clear();
         }
-        logger.info("{} Backup, hasRemoteEndpoint: {}", this.endpoint.getLocalEndpointId(), this.hasRemoteEndpoints.get());
+    }
+
+    @Override
+    public void receiveMessage(Message message) {
+        if (message.protocol == message.protocol) {
+            this.endpoint.receive(message);
+        }
     }
 
     @Override
@@ -159,7 +167,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             return;
         }
         this.storedEntries.forEach((endpointId, storedEntries) -> {
-            keys.stream().forEach(this.storedEntries::remove);
+            keys.stream().forEach(storedEntries::remove);
         });
     }
 

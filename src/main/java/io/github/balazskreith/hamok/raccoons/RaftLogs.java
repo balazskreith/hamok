@@ -2,10 +2,6 @@ package io.github.balazskreith.hamok.raccoons;
 
 import io.github.balazskreith.hamok.common.RwLock;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
-import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.schedulers.Schedulers;
-import io.reactivex.rxjava3.subjects.PublishSubject;
-import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,17 +31,12 @@ class RaftLogs {
 
     private final RwLock rwLock = new RwLock();
     private final Map<Integer, LogEntry> entries;
-    private final Subject<LogEntry> committedEntries = PublishSubject.create();
 
     RaftLogs(Map<Integer, LogEntry> entries) {
         this.entries = entries;
         this.commitIndex = -1;
         this.lastApplied = 0;
         this.nextIndex = 0;
-    }
-
-    public Observable<LogEntry> committedEntries() {
-        return this.committedEntries.observeOn(Schedulers.computation());
     }
 
     /**
@@ -73,6 +64,10 @@ class RaftLogs {
         });
     }
 
+    public int size() {
+        return this.rwLock.supplyInReadLock(this.entries::size);
+    }
+
     /**
      * Increase the lastApplied index and removes the entry from the logs
      */
@@ -90,7 +85,7 @@ class RaftLogs {
             if (this.nextIndex <= expiredLogIndex || expiredLogIndex < this.lastApplied) {
                 return;
             }
-            if (this.commitIndex <= expiredLogIndex) {
+            if (this.commitIndex < expiredLogIndex) {
                 logger.warn("expired log index is higher than the commit index. This is a problem! increase the expiration timeout, because it leads to a potential inconsistency issue.");
             }
             var removed = 0;
@@ -104,31 +99,63 @@ class RaftLogs {
         });
     }
 
-    public void commit() {
-        var result = this.rwLock.supplyInWriteLock(() -> {
-            if (this.nextIndex <= this.commitIndex + 1) {
-                logger.warn("Cannot commit index {}, because there is no next entry to commit. commitIndex: {}, nextIndex: {}", this.commitIndex, this.nextIndex);
-                return null;
-            }
-            var nextCommitIndex = this.commitIndex + 1;
-            var logEntry = this.entries.get(nextCommitIndex);
-            if (logEntry == null) {
-                logger.warn("LogEntry for nextCommitIndex {} is null. it supposed not to be null.", nextCommitIndex);
-                return null;
-            }
-            this.commitIndex = nextCommitIndex;
-            return logEntry;
+    public List<LogEntry> commitUntil(int newCommitIndex) {
+        var allowed = this.rwLock.supplyInReadLock(() -> {
+           if (newCommitIndex <= this.commitIndex) {
+               logger.warn("Requested to commit until {} index, but the actual commitIndex is {}", newCommitIndex, this.commitIndex);
+               return false;
+           }
+           return true;
         });
-        if (result != null) {
-            this.committedEntries.onNext(result);
-        } else {
-            logger.warn("Nothing to commit");
+        if (!allowed) {
+            return Collections.emptyList();
         }
+        var committedEntries = new LinkedList<LogEntry>();
+        this.rwLock.runInWriteLock(() -> {
+            while (this.commitIndex < newCommitIndex) {
+                if (this.nextIndex <= this.commitIndex + 1) {
+                    logger.warn("Cannot commit, because there is no next entry to commit. commitIndex: {}, nextIndex: {}, newCommitIndex: {}", this.commitIndex, this.nextIndex, newCommitIndex);
+                    return;
+                }
+                var nextCommitIndex = this.commitIndex + 1;
+                var logEntry = this.entries.get(nextCommitIndex);
+                if (logEntry == null) {
+                    logger.warn("LogEntry for nextCommitIndex {} is null. it supposed not to be null.", nextCommitIndex);
+                    return;
+                }
+                this.commitIndex = nextCommitIndex;
+                committedEntries.add(logEntry);
+            }
+        });
+        return committedEntries;
     }
+
+//    public void commit() {
+//        var result = this.rwLock.supplyInWriteLock(() -> {
+//            if (this.nextIndex <= this.commitIndex + 1) {
+//                logger.warn("Cannot commit index {}, because there is no next entry to commit. commitIndex: {}, nextIndex: {}", this.commitIndex, this.nextIndex);
+//                return null;
+//            }
+//            var nextCommitIndex = this.commitIndex + 1;
+//            var logEntry = this.entries.get(nextCommitIndex);
+//            if (logEntry == null) {
+//                logger.warn("LogEntry for nextCommitIndex {} is null. it supposed not to be null.", nextCommitIndex);
+//                return null;
+//            }
+//            this.commitIndex = nextCommitIndex;
+//            return logEntry;
+//        });
+//        if (result != null) {
+//            this.committedEntries.onNext(result);
+//        } else {
+//            logger.warn("Nothing to commit");
+//        }
+//    }
 
     public Integer submit(int term, Message entry) {
         return this.rwLock.supplyInWriteLock(() -> {
             var logEntry = new LogEntry(this.nextIndex, term, entry);
+//            logger.info("Adding entry with index: {}", logEntry);
             this.entries.put(logEntry.index(), logEntry);
             ++this.nextIndex;
             return logEntry.index();
@@ -210,6 +237,9 @@ class RaftLogs {
             if (0 < missingEntries) {
                 logger.info("Requested to collect entries, startIndex: {}, endIndex: {}, but missing {} entries probably in the beginning. The other peer should request a commit sync", startIndex, this.nextIndex, missingEntries);
             }
+//            if (0 < result.size()) {
+//                logger.info("Retrieved 0 < result entries");
+//            }
             return result;
         });
     }

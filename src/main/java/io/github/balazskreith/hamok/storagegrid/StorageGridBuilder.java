@@ -10,12 +10,12 @@ import java.util.concurrent.Executor;
 
 public class StorageGridBuilder {
 
-    private UUID id = UUID.randomUUID();
     private String context;
     private RaccoonBuilder raccoonBuilder = new RaccoonBuilder();
     private RaccoonConfig raccoonConfig = RaccoonConfig.create();
     private StorageGridConfig storageGridConfig = StorageGridConfig.create();
     private GridOpSerDe gridOpSerDe = new GridOpSerDe();
+    private StorageGridExecutors storageGridExecutors = StorageGridExecutors.createDefault();
 
     public StorageGridBuilder withContext(String value) {
         this.context = value;
@@ -28,7 +28,7 @@ public class StorageGridBuilder {
     }
 
     public StorageGridBuilder withGridOpSerDe(GridOpSerDe gridOpSerDe) {
-        this.gridOpSerDe = this.gridOpSerDe;
+        this.gridOpSerDe = gridOpSerDe;
         return this;
     }
 
@@ -87,6 +87,11 @@ public class StorageGridBuilder {
         return this;
     }
 
+    public StorageGridBuilder withExecutors(StorageGridExecutors executors) {
+        this.storageGridExecutors = executors;
+        return this;
+    }
+
     StorageGridBuilder() {
 
     }
@@ -97,6 +102,7 @@ public class StorageGridBuilder {
                 .build();
         var result = new StorageGrid(
                 this.storageGridConfig,
+                this.storageGridExecutors,
                 raccoon,
                 this.gridOpSerDe,
                 this.context

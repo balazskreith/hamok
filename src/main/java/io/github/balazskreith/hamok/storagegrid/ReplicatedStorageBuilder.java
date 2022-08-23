@@ -2,8 +2,8 @@ package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Depot;
-import io.github.balazskreith.hamok.mappings.Codec;
 import io.github.balazskreith.hamok.memorystorages.ConcurrentMemoryStorage;
+import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
 import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 public class ReplicatedStorageBuilder<K, V> {
@@ -22,14 +23,17 @@ public class ReplicatedStorageBuilder<K, V> {
     private Consumer<ReplicatedStorage<K, V>> storageBuiltListener = storage -> {};
     private StorageGrid grid;
 
-    private Supplier<Codec<K, byte[]>> keyCodecSupplier;
-    private Supplier<Codec<V, byte[]>> valueCodecSupplier;
+    private Function<K, byte[]> keyEncoder;
+    private Function<byte[], K> keyDecoder;
+    private Function<V, byte[]> valueEncoder;
+    private Function<byte[], V> valueDecoder;
+
     private Storage<K, V> actualStorage;
     private String storageId = null;
     private int maxCollectedActualStorageEvents = 100;
     private int maxCollectedActualStorageTimeInMs = 100;
-    private int maxMessageKeys = 10000;
-    private int maxMessageValues = 1000;
+    private int maxMessageKeys = 0;
+    private int maxMessageValues = 0;
 
     ReplicatedStorageBuilder() {
 
@@ -51,6 +55,18 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
+    public ReplicatedStorageBuilder<K, V> setMaxMessageKeys(int value) {
+        this.maxMessageKeys = value;
+        this.storageEndpointBuilder.setMaxMessageKeys(value);
+        return this;
+    }
+
+    public ReplicatedStorageBuilder<K, V> setMaxMessageValues(int value) {
+        this.maxMessageValues = value;
+        this.storageEndpointBuilder.setMaxMessageValues(value);
+        return this;
+    }
+
     public ReplicatedStorageBuilder<K, V> setMaxCollectedStorageEvents(int value) {
         this.maxCollectedActualStorageEvents = value;
         return this;
@@ -61,19 +77,8 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
-    public ReplicatedStorageBuilder<K, V> setMaxMessageKeys(int value) {
-        this.maxMessageKeys = value;
-        return this;
-    }
-
-    public ReplicatedStorageBuilder<K, V> setMaxMessageValues(int value) {
-        this.maxMessageValues = value;
-        return this;
-    }
-
     public ReplicatedStorageBuilder<K, V> setStorageId(String value) {
         this.storageId = value;
-        this.storageEndpointBuilder.setStorageId(value);
         return this;
     }
 
@@ -82,26 +87,41 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
-    public ReplicatedStorageBuilder<K, V> setKeyCodecSupplier(Supplier<Codec<K, byte[]>> value) {
-        this.keyCodecSupplier = value;
+    public ReplicatedStorageBuilder<K, V> setKeyCodec(Function<K, byte[]> encoder, Function<byte[], K> decoder) {
+        this.keyEncoder = encoder;
+        this.keyDecoder = decoder;
         return this;
     }
+
+    public ReplicatedStorageBuilder<K, V> setValueCodec(Function<V, byte[]> encoder, Function<byte[], V> decoder) {
+        this.valueEncoder = encoder;
+        this.valueDecoder = decoder;
+        return this;
+    }
+
 
     ReplicatedStorageBuilder<K, V> setMapDepotProvider(Supplier<Depot<Map<K, V>>> depotProvider) {
         this.storageEndpointBuilder.setMapDepotProvider(depotProvider);
         return this;
     }
 
-    public ReplicatedStorageBuilder<K, V> setValueCodecSupplier(Supplier<Codec<V, byte[]>> value) {
-        this.valueCodecSupplier = value;
-        return this;
-    }
-
 
     public ReplicatedStorage<K, V> build() {
-        Objects.requireNonNull(this.valueCodecSupplier, "Codec for values must be defined");
-        Objects.requireNonNull(this.keyCodecSupplier, "Codec for keys must be defined");
-        Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
+        Objects.requireNonNull(this.valueEncoder, "Codec for values must be defined");
+        Objects.requireNonNull(this.valueDecoder, "Codec for values must be defined");
+        Objects.requireNonNull(this.keyEncoder, "Codec for keys must be defined");
+        Objects.requireNonNull(this.valueDecoder, "Codec for keys must be defined");
+
+        if (this.actualStorage == null) {
+            Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
+            this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
+                    .setId(this.storageId)
+                    .build();
+            logger.info("Replicated Storage {} is built with Concurrent Memory Storage ", this.storageId);
+        } else {
+            this.storageId = this.actualStorage.getId();
+        }
+
         var config = new ReplicatedStorageConfig(
                 this.storageId,
                 this.maxCollectedActualStorageEvents,
@@ -110,23 +130,39 @@ public class ReplicatedStorageBuilder<K, V> {
                 this.maxMessageValues
         );
 
-        var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
+        var actualMessageSerDe = new StorageOpSerDe<K, V>(
+                this.keyEncoder,
+                this.keyDecoder,
+                this.valueEncoder,
+                this.valueDecoder
+        );
         var localEndpointSet = Set.of(this.grid.getLocalEndpointId());
         var storageEndpoint = this.storageEndpointBuilder
+                .setStorageId(this.storageId)
                 .setMessageSerDe(actualMessageSerDe)
                 .setDefaultResolvingEndpointIdsSupplier(() -> localEndpointSet)
                 .setProtocol(ReplicatedStorage.PROTOCOL_NAME)
                 .build();
-        storageEndpoint.requestsDispatcher().subscribe(this.grid::submit);
+        storageEndpoint.requestsDispatcher().subscribe(message -> {
+            var type = MessageType.valueOf(message.type);
+            switch (type) {
+                case GET_ENTRIES_REQUEST,
+                        GET_SIZE_REQUEST,
+                        GET_KEYS_REQUEST -> {
+                    this.grid.send(message);
+                }
+                default -> {
+                    this.grid.submit(message);
+                }
+            }
+        });
         this.storageEndpointBuiltListener.accept(storageEndpoint);
-        if (this.actualStorage == null) {
-            this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
-                    .setId(storageEndpoint.getStorageId())
-                    .build();
-            logger.info("Replicated Storage {} is built with Concurrent Memory Storage ", storageEndpoint.getStorageId());
-        }
 
-        var result = new ReplicatedStorage<K, V>(this.actualStorage, storageEndpoint, config);
+        var result = new ReplicatedStorage<K, V>(
+                this.actualStorage,
+                storageEndpoint,
+                config
+        );
         this.storageBuiltListener.accept(result);
         return result;
 

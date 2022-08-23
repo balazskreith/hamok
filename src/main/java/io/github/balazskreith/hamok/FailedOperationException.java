@@ -1,7 +1,7 @@
-package io.github.balazskreith.hamok.storagegrid;
+package io.github.balazskreith.hamok;
 
 public class FailedOperationException extends RuntimeException {
-    FailedOperationException(String message) {
+    public FailedOperationException(String message) {
         super(message);
     }
 }

@@ -1,10 +1,6 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.Storage;
-import io.github.balazskreith.hamok.StorageBatchedIterator;
-import io.github.balazskreith.hamok.StorageEntry;
-import io.github.balazskreith.hamok.StorageEvents;
-import io.github.balazskreith.hamok.common.BatchCollector;
+import io.github.balazskreith.hamok.*;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.SetUtils;
@@ -14,7 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -38,6 +33,8 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
     private final BackupStorage<K, V> backupStorage;
     private final SeparatedStorageConfig config;
     private final Disposer disposer;
+    private final CollectedStorageEvents<K, V> collectedEvents;
+    private final InputStreamer<K, V> inputStreamer;
 
     SeparatedStorage(
             Storage<K, V> storage,
@@ -53,6 +50,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 var entries = this.storage.getAll(getEntriesRequest.keys());
                 var response = getEntriesRequest.createResponse(entries);
                 this.endpoint.sendGetEntriesResponse(response);
+            }).onGetKeysRequest(request -> {
+                var response = request.createResponse(
+                        this.storage.keys()
+                );
+                this.endpoint.sendGetKeysResponse(response);
             }).onDeleteEntriesRequest(request -> {
                 var deletedKeys = this.storage.deleteAll(request.keys());
                 var response = request.createResponse(deletedKeys);
@@ -92,17 +94,10 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 this.storage.deleteAll(keys);
             }).onRemoteEndpointDetached(remoteEndpointId -> {
                 var savedEntries = this.backupStorage.extract(remoteEndpointId);
-                this.storage.setAll(savedEntries);
-            }).onLocalEndpointReset(payload -> {
-                var evictedEntries = this.storage.size();
-                this.storage.clear();
-                var backupMetrics = this.backupStorage.metrics();
-                this.backupStorage.clear();
-                logger.info("{} Reset Storage {}. Evicted storage entries: {}, Deleted backup entries: {}",
-                        this.endpoint.getLocalEndpointId(), this.storage.getId(), evictedEntries, backupMetrics.storedEntries());
-                });
+                this.storage.restoreAll(savedEntries);
+            });
 
-        var collectedEvents = this.storage.events()
+        this.collectedEvents = this.storage.events()
                 .collectOn(Schedulers.io(), this.config.maxCollectedActualStorageTimeInMs(), this.config.maxCollectedActualStorageEvents());
         this.disposer = Disposer.builder()
                 .addDisposable(collectedEvents.createdEntries().subscribe(modifiedStorageEntries -> {
@@ -138,6 +133,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                     this.backupStorage.evict(keys);
                 }))
                 .build();
+        this.inputStreamer = new InputStreamer<>(config.maxMessageKeys(), config.maxMessageValues());
+    }
+
+    public CollectedStorageEvents<K, V> collectedEvents() {
+        return this.collectedEvents;
     }
 
     @Override
@@ -173,13 +173,13 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         if (keys.size() <= result.size()) {
             return result;
         }
-        keys.stream().collect(this.makeBatchCollectorForKeys(batchedKeys -> {
-            var remoteEntriesBatch = this.endpoint.requestGetEntries(batchedKeys);
-            if (remoteEntriesBatch != null) {
-                result.putAll(remoteEntriesBatch);
-            }
-        }));
-        return result;
+        return this.inputStreamer.streamKeys(keys)
+                .map(requestedKeys -> this.endpoint.requestGetEntries(requestedKeys))
+                .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
     }
 
     @Override
@@ -216,16 +216,13 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 key -> m.get(key)
         ));
 
-        var updatedRemoteEntries = new HashMap<K, V>();
-        remainingEntries.entrySet().stream().collect(this.makeBatchCollectorForEntrySet(entries -> {
-            var requestedUpdatingEntries = entries.stream().collect(Collectors.toMap(
-                    Map.Entry::getKey,
-                    Map.Entry::getValue
-            ));
-            var remoteEntries = this.endpoint.requestUpdateEntries(requestedUpdatingEntries);
-            updatedRemoteEntries.putAll(remoteEntries);
-        }));
-
+        var updatedRemoteEntries = this.inputStreamer.streamEntries(remainingEntries)
+                .map(requestedEntries -> this.endpoint.requestUpdateEntries(requestedEntries))
+                .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
         if (updatedRemoteEntries != null && 0 < updatedRemoteEntries.size()) {
             updatedRemoteEntries.keySet().stream().forEach(missingKeys::remove);
         }
@@ -252,11 +249,13 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         if (missingKeys.size() < 1) {
             return existingLocalEntries;
         }
-        var existingRemoteEntries = new HashMap<K, V>();
-        missingKeys.stream().collect(this.makeBatchCollectorForKeys(remainingKeySet -> {
-            var remoteEntries = this.endpoint.requestGetEntries(remainingKeySet);
-            existingRemoteEntries.putAll(remoteEntries);
-        }));
+        var existingRemoteEntries = this.inputStreamer.streamKeys(missingKeys)
+                .map(requestedKeys -> this.endpoint.requestGetEntries(requestedKeys))
+                .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
         if (0 < existingRemoteEntries.size()) {
             existingRemoteEntries.keySet().stream().forEach(missingKeys::remove);
         }
@@ -297,11 +296,10 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                     .filter(key -> !localDeletedKeys.contains(key))
                     .collect(Collectors.toSet());
         }
-        var remoteDeletedKeys = new HashSet<K>();
-        remainingKeys.stream().collect(this.makeBatchCollectorForKeys(remainingKeySet -> {
-            var deletedKeys = this.endpoint.requestDeleteEntries(remainingKeySet);
-            remoteDeletedKeys.addAll(deletedKeys);
-        }));
+        var remoteDeletedKeys = this.inputStreamer.streamKeys(remainingKeys)
+                .map(requestedKeys -> this.endpoint.requestDeleteEntries(requestedKeys))
+                .flatMap(respondedEntries -> respondedEntries.stream())
+                .collect(Collectors.toSet());
         return SetUtils.combineAll(localDeletedKeys, remoteDeletedKeys);
     }
 
@@ -317,7 +315,8 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public Set<K> keys() {
-        return this.storage.keys();
+        var remoteKeys = this.endpoint.requestGetKeys();
+        return SetUtils.combineAll(this.storage.keys(), remoteKeys);
     }
 
     @Override
@@ -335,6 +334,21 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         this.storage.close();
         this.backupStorage.close();
         this.disposer.dispose();
+    }
+
+    @Override
+    public void evict(K key) {
+        throw new RuntimeException("evict operation is not allowed");
+    }
+
+    @Override
+    public void evictAll(Set<K> keys) {
+        throw new RuntimeException("evict operation is not allowed");
+    }
+
+    @Override
+    public void restoreAll(Map<K, V> entries) {
+        throw new RuntimeException("restore operation is not allowed for replicated storage");
     }
 
     @Override
@@ -366,22 +380,41 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         return this.config;
     }
 
-    private BatchCollector<K, Set<K>> makeBatchCollectorForKeys(Consumer<Set<K>> consumer) {
-        return BatchCollector.builder()
-                .withEmptyCollectionSupplier(Collections::emptySet)
-                .withMutableCollectionSupplier(HashSet::new)
-                .withBatchSize(Math.min(this.config.maxMessageKeys(), this.config.maxMessageValues()))
-                .withConsumer(consumer)
-                .build();
+    private boolean executeSync() {
+        var remoteKeys = this.endpoint.requestGetKeys();
+        var storageSizeBefore = this.storage.size();
+        this.storage.evictAll(remoteKeys);
+        var storageSizeAfter = this.storage.size();
+
+        var storedBackupBefore = this.backupStorage.metrics().storedEntries();
+        this.backupStorage.evict(remoteKeys);
+        var storedBackupAfter = this.backupStorage.metrics().storedEntries();
+
+        logger.info("Execute sync on {}. Evicted storage entries: {}, Evicted backup entries: {}",
+            this.storage.getId(),
+                storageSizeBefore - storageSizeAfter,
+                storedBackupBefore - storedBackupAfter
+        );
+        return true;
     }
 
-    private BatchCollector<Map.Entry<K, V>, List<Map.Entry<K, V>>> makeBatchCollectorForEntrySet(Consumer<List<Map.Entry<K, V>>> consumer) {
-        var batchSize = Math.min(this.config.maxMessageKeys(), this.config.maxMessageValues());
-        return BatchCollector.builder()
-                .withEmptyCollectionSupplier(Collections::emptyList)
-                .withMutableCollectionSupplier(ArrayList::new)
-                .withBatchSize(batchSize)
-                .withConsumer(consumer)
+    static<U, R> GridActor createGridMember(SeparatedStorage<U, R> subject) {
+        return GridActor.builder()
+                .setIdentifier(subject.endpoint.getStorageId())
+                .setMessageAcceptor(message -> {
+                    if (message.protocol == null) {
+                        return;
+                    }
+                    switch (message.protocol) {
+                        case SeparatedStorage.PROTOCOL_NAME -> subject.endpoint.receive(message);
+                        case BackupStorage.PROTOCOL_NAME -> subject.backupStorage.receiveMessage(message);
+                        default -> {
+                            logger.warn("Message protocol is unknown in {} for message {}", subject.getClass().getSimpleName(), message);
+                        }
+                    }
+                })
+                .setCloseAction(() -> subject.endpoint.dispose())
+                .setSyncExecutor(subject::executeSync)
                 .build();
     }
 }

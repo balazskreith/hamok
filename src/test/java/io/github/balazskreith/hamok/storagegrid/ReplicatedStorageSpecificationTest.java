@@ -1,37 +1,34 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.mappings.Codec;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BinaryOperator;
+import java.util.function.Function;
 
 @DisplayName("Replicated Storage Specifications Test")
 class ReplicatedStorageSpecificationTest {
 
-    private static final Logger logger = LoggerFactory.getLogger(FederatedStorageFunctionalTest.class);
+    private static final Logger logger = LoggerFactory.getLogger(ReplicatedStorageSpecificationTest.class);
 
     private StorageGrid grid;
     private ReplicatedStorage<String, Integer> storage;
 
     @BeforeEach
     void setup() {
-        var keyCodec = Codec.<String, byte[]>create(str -> str.getBytes(StandardCharsets.UTF_8), bytes -> new String(bytes));
-        var valueCodec = Codec.<Integer, byte[]>create(i -> ByteBuffer.allocate(4).putInt(i).array(), arr -> ByteBuffer.wrap(arr).getInt());
-        BinaryOperator<Integer> mergeOp = (itemsFromStockPile1, itemsFromStockPile2) -> itemsFromStockPile1 + itemsFromStockPile2;
+        Function<Integer, byte[]> valueEncoder = i -> ByteBuffer.allocate(4).putInt(i).array();
+        Function<byte[], Integer> valueDecoder = b -> ByteBuffer.wrap(b).getInt();
 
         this.grid = StorageGrid.builder().build();
         this.storage = this.grid.<String, Integer>replicatedStorage()
                 .setStorageId("replicated-storage-test")
                 .setMaxCollectedStorageEvents(1)
                 .setMaxCollectedStorageTimeInMs(0)
-                .setKeyCodecSupplier(() -> keyCodec)
-                .setValueCodecSupplier(() -> valueCodec)
+                .setKeyCodec(str -> str.getBytes(), String::new)
+                .setValueCodec(valueEncoder, valueDecoder)
                 .build();
 
     }

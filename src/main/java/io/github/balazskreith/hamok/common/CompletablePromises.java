@@ -40,7 +40,11 @@ public class CompletablePromises<K, V> {
             return Optional.empty();
         }
         try {
-            return request.get(this.timeoutInMs, TimeUnit.MILLISECONDS);
+            if (this.timeoutInMs < 1) {
+                return request.get();
+            } else {
+                return request.get(this.timeoutInMs, TimeUnit.MILLISECONDS);
+            }
         } catch (ExecutionException e) {
             logger.warn("Exception occurred while awaiting for request {}, context: {}", key, context);
         } catch (InterruptedException e) {

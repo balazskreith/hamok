@@ -2,7 +2,6 @@ package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Depot;
-import io.github.balazskreith.hamok.mappings.Codec;
 import io.github.balazskreith.hamok.memorystorages.ConcurrentMemoryStorage;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorageBuilder;
@@ -13,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 public class SeparatedStorageBuilder<K, V> {
@@ -23,16 +23,20 @@ public class SeparatedStorageBuilder<K, V> {
     private Consumer<StorageEndpoint<K, V>> storageEndpointBuiltListener = endpoint -> {};
     private Consumer<SeparatedStorage<K, V>> storageBuiltListener = storage -> {};
 
-    private Supplier<Codec<K, byte[]>> keyCodecSupplier;
-    private Supplier<Codec<V, byte[]>> valueCodecSupplier;
+    private Function<K, byte[]> keyEncoder;
+    private Function<byte[], K> keyDecoder;
+    private Function<V, byte[]> valueEncoder;
+    private Function<byte[], V> valueDecoder;
+
     private Storage<K, V> actualStorage;
     private StorageGrid grid = null;
     private String storageId = null;
     private int maxCollectedActualStorageEvents = 100;
     private int maxCollectedActualStorageTimeInMs = 100;
     private int iteratorBatchSize = 300;
-    private int maxMessageKeys = 10000;
-    private int maxMessageValues = 1000;
+    private int maxMessageKeys = 0;
+    private int maxMessageValues = 0;
+
 
     SeparatedStorageBuilder() {
 
@@ -63,8 +67,6 @@ public class SeparatedStorageBuilder<K, V> {
 
     public SeparatedStorageBuilder<K, V> setStorageId(String value) {
         this.storageId = value;
-        this.storageEndpointBuilder.setStorageId(value);
-        this.backupEndpointBuilder.setStorageId(value);
         return this;
     }
 
@@ -78,18 +80,20 @@ public class SeparatedStorageBuilder<K, V> {
         return this;
     }
 
+    public SeparatedStorageBuilder<K, V> setMaxCollectedStorageTimeInMs(int value) {
+        this.maxCollectedActualStorageTimeInMs = value;
+        return this;
+    }
+
     public SeparatedStorageBuilder<K, V> setMaxMessageKeys(int value) {
         this.maxMessageKeys = value;
+        this.storageEndpointBuilder.setMaxMessageKeys(value);
         return this;
     }
 
     public SeparatedStorageBuilder<K, V> setMaxMessageValues(int value) {
         this.maxMessageValues = value;
-        return this;
-    }
-
-    public SeparatedStorageBuilder<K, V> setMaxCollectedStorageTimeInMs(int value) {
-        this.maxCollectedActualStorageTimeInMs = value;
+        this.storageEndpointBuilder.setMaxMessageValues(value);
         return this;
     }
 
@@ -98,21 +102,33 @@ public class SeparatedStorageBuilder<K, V> {
         return this;
     }
 
-    public SeparatedStorageBuilder<K, V> setKeyCodecSupplier(Supplier<Codec<K, byte[]>> value) {
-        this.keyCodecSupplier = value;
+    public SeparatedStorageBuilder<K, V> setKeyCodec(Function<K, byte[]> encoder, Function<byte[], K> decoder) {
+        this.keyEncoder = encoder;
+        this.keyDecoder = decoder;
         return this;
     }
 
-    public SeparatedStorageBuilder<K, V> setValueCodecSupplier(Supplier<Codec<V, byte[]>> value) {
-        this.valueCodecSupplier = value;
+    public SeparatedStorageBuilder<K, V> setValueCodec(Function<V, byte[]> encoder, Function<byte[], V> decoder) {
+        this.valueEncoder = encoder;
+        this.valueDecoder = decoder;
         return this;
     }
 
 
     public SeparatedStorage<K, V> build() {
-        Objects.requireNonNull(this.valueCodecSupplier, "Codec for values must be defined");
-        Objects.requireNonNull(this.keyCodecSupplier, "Codec for keys must be defined");
-        Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
+        Objects.requireNonNull(this.valueEncoder, "Codec for values must be defined");
+        Objects.requireNonNull(this.valueDecoder, "Codec for values must be defined");
+        Objects.requireNonNull(this.keyEncoder, "Codec for keys must be defined");
+        Objects.requireNonNull(this.valueDecoder, "Codec for keys must be defined");
+        if (this.actualStorage == null) {
+            Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
+            this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
+                    .setId(this.storageId)
+                    .build();
+            logger.info("Replicated Storage {} is built with Concurrent Memory Storage ", this.storageId);
+        } else {
+            this.storageId = this.actualStorage.getId();
+        }
         var config = new SeparatedStorageConfig(
                 this.storageId,
                 this.maxCollectedActualStorageEvents,
@@ -122,23 +138,29 @@ public class SeparatedStorageBuilder<K, V> {
                 this.maxMessageValues
         );
 
-        var actualMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
+        var actualMessageSerDe = new StorageOpSerDe<K, V>(
+                this.keyEncoder,
+                this.keyDecoder,
+                this.valueEncoder,
+                this.valueDecoder
+        );
         var storageEndpoint = this.storageEndpointBuilder
+                .setStorageId(this.storageId)
                 .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
                 .setMessageSerDe(actualMessageSerDe)
                 .setProtocol(SeparatedStorage.PROTOCOL_NAME)
                 .build();
         storageEndpoint.requestsDispatcher().subscribe(this.grid::send);
         this.storageEndpointBuiltListener.accept(storageEndpoint);
-        if (this.actualStorage == null) {
-            this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
-                    .setId(storageEndpoint.getStorageId())
-                    .build();
-            logger.info("Separated Storage {} is built with Concurrent Memory Storage ", storageEndpoint.getStorageId());
-        }
 
-        var backupMessageSerDe = new StorageOpSerDe<K, V>(this.keyCodecSupplier.get(), this.valueCodecSupplier.get());
+        var backupMessageSerDe = new StorageOpSerDe<K, V>(
+                this.keyEncoder,
+                this.keyDecoder,
+                this.valueEncoder,
+                this.valueDecoder
+        );
         var backupEndpoint = this.backupEndpointBuilder
+                .setStorageId(this.storageId)
                 .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
                 .setMessageSerDe(backupMessageSerDe)
                 .setProtocol(BackupStorage.PROTOCOL_NAME)

@@ -22,30 +22,20 @@ public class RemotePeers {
     private final Subject<UUID> joinedRemotePeerIds = PublishSubject.create();
     private final Map<UUID, RemotePeer> remotePeers = new ConcurrentHashMap<>();
     private final AtomicReference<Set<UUID>> activeRemotePeerIds = new AtomicReference<>(Collections.emptySet());
-    private final AtomicReference<Set<UUID>> inactiveRemotePeerIds = new AtomicReference<>(Collections.emptySet());
     private final Random random = new Random();
     private final AtomicInteger hashCode = new AtomicInteger(random.nextInt());
     void reset() {
-        this.remotePeers.clear();
+        var activeRemoteIds = this.activeRemotePeerIds.get();
+        activeRemoteIds.forEach(this::detach);
         this.updateRemotePeerIds();
     }
 
     void detach(UUID remotePeerId) {
-        var remotePeer = this.remotePeers.get(remotePeerId);
+        var remotePeer = this.remotePeers.remove(remotePeerId);
         if (remotePeer == null) {
             logger.warn("Cannot detach peer {}, because it has not been registered as remote peer", remotePeerId);
             return;
         }
-        if (!remotePeer.active()) {
-            logger.warn("Attempted to inactivate remote peer twice");
-            return;
-        }
-        var updatedRemotePeer = new RemotePeer(
-                remotePeerId,
-                false,
-                Instant.now().toEpochMilli()
-        );
-        this.remotePeers.put(remotePeerId, updatedRemotePeer);
         this.updateRemotePeerIds();
         this.detachedRemotePeerIds.onNext(remotePeerId);
     }
@@ -57,27 +47,24 @@ public class RemotePeers {
     void join(UUID remotePeerId) {
         var remotePeer = new RemotePeer(
                 remotePeerId,
-                true,
                 Instant.now().toEpochMilli()
         );
         var prevRemotePeer = this.remotePeers.put(remotePeerId, remotePeer);
-        if (prevRemotePeer != null && prevRemotePeer.active()) {
+        if (prevRemotePeer != null) {
             return;
         }
-
         this.updateRemotePeerIds();
         this.joinedRemotePeerIds.onNext(remotePeerId);
     }
 
     void touch(UUID remotePeerId) {
         var remotePeer = this.remotePeers.get(remotePeerId);
-        if (remotePeer == null || remotePeer.active() == false) {
+        if (remotePeer == null) {
             this.join(remotePeerId);
             return;
         }
         this.remotePeers.put(remotePeerId, new RemotePeer(
                 remotePeerId,
-                true,
                 Instant.now().toEpochMilli()
         ));
         this.hashCode.set(this.hashCode.get() + this.random.nextInt());
@@ -112,22 +99,12 @@ public class RemotePeers {
         return this.activeRemotePeerIds.get();
     }
 
-    public Set<UUID> getInActiveRemotePeerIds() {
-        return this.inactiveRemotePeerIds.get();
-    }
-
     private void updateRemotePeerIds() {
         var activeRemotePeerIds = this.remotePeers.values().stream()
-                .filter(RemotePeer::active)
                 .map(RemotePeer::id)
                 .collect(Collectors.toSet());
 
-        var inactiveRemotePeerIds = this.remotePeers.values().stream()
-                .filter(r -> r.active() == false)
-                .map(RemotePeer::id)
-                .collect(Collectors.toSet());
         this.hashCode.set(this.hashCode.get() + this.random.nextInt());
         this.activeRemotePeerIds.set(activeRemotePeerIds);
-        this.inactiveRemotePeerIds.set(inactiveRemotePeerIds);
     }
 }

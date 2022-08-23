@@ -13,6 +13,7 @@ public class StorageEventDispatcher<K, V> implements StorageEvents<K, V>, Consum
     private final Subject<ModifiedStorageEntry<K, V>> deletedEntrySubject = PublishSubject.create();
     private final Subject<ModifiedStorageEntry<K, V>> expiredEntrySubject = PublishSubject.create();
     private final Subject<ModifiedStorageEntry<K, V>> evictedEntrySubject = PublishSubject.create();
+    private final Subject<ModifiedStorageEntry<K, V>> restoredEntrySubject = PublishSubject.create();
     private final Subject<String> closingStorageSubject = PublishSubject.create();
 
     public StorageEventDispatcher() {
@@ -27,6 +28,7 @@ public class StorageEventDispatcher<K, V> implements StorageEvents<K, V>, Consum
             case DELETED_ENTRY -> this.deletedEntrySubject.onNext(modifiedStorageEntry);
             case EXPIRED_ENTRY -> this.expiredEntrySubject.onNext(modifiedStorageEntry);
             case EVICTED_ENTRY -> this.evictedEntrySubject.onNext(modifiedStorageEntry);
+            case RESTORED_ENTRY -> this.restoredEntrySubject.onNext(modifiedStorageEntry);
             case CLOSING_STORAGE -> this.closingStorageSubject.onNext(storageEntryEvent.getStorageId());
         }
     }
@@ -57,6 +59,11 @@ public class StorageEventDispatcher<K, V> implements StorageEvents<K, V>, Consum
     }
 
     @Override
+    public Observable<ModifiedStorageEntry<K, V>> restoredEntry() {
+        return this.restoredEntrySubject;
+    }
+
+    @Override
     public Observable<String> closingStorage() { return this.closingStorageSubject; }
 
     @Override
@@ -76,6 +83,7 @@ public class StorageEventDispatcher<K, V> implements StorageEvents<K, V>, Consum
                 (this.deletedEntrySubject.hasComplete() || this.deletedEntrySubject.hasThrowable()) &&
                 (this.expiredEntrySubject.hasComplete() || this.expiredEntrySubject.hasThrowable()) &&
                 (this.evictedEntrySubject.hasComplete() || this.evictedEntrySubject.hasThrowable()) &&
+                (this.restoredEntrySubject.hasComplete() || this.restoredEntrySubject.hasThrowable()) &&
                 true
                 ;
     }

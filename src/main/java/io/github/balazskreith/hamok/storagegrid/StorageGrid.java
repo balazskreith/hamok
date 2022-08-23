@@ -1,13 +1,18 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.common.CompletablePromises;
+import io.github.balazskreith.hamok.HamokError;
+import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.raccoons.Raccoon;
 import io.github.balazskreith.hamok.raccoons.events.HelloNotification;
-import io.github.balazskreith.hamok.storagegrid.messages.*;
+import io.github.balazskreith.hamok.storagegrid.messages.GridOpSerDe;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
+import io.github.balazskreith.hamok.storagegrid.messages.SubmitRequest;
 import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
@@ -16,9 +21,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class StorageGrid implements Disposable {
@@ -28,40 +31,47 @@ public class StorageGrid implements Disposable {
         return new StorageGridBuilder();
     }
 
-//    private final AtomicReference<Subject<Message>> pendingStorageSyncs = new AtomicReference<>(null);
-    private final AtomicReference<StorageSyncOperation> pendingStorageSyncs = new AtomicReference<>(null);
-    private final CompletablePromises<UUID, Boolean> pendingSubmits;
-    private final Map<String, DistributedStorageOperations> storageOperations = new ConcurrentHashMap<>();
+    private final AtomicReference<CompletableFuture<Boolean>> pendingSync = new AtomicReference<>(null);
+    private final Map<UUID, SubmitRequest> pendingSubmits;
+
+    private final Map<String, GridActor> actors = new ConcurrentHashMap<>();
     private final GridOpSerDe gridOpSerDe;
     private final Subject<Message> sender = PublishSubject.<Message>create().toSerialized();
     private final Subject<Message> receiver = PublishSubject.<Message>create().toSerialized();
+    private final Scheduler submissionScheduler;
+    private final Subject<HamokError> errors = PublishSubject.create();
 
     private final Disposer disposer;
     private final StorageGridConfig config;
     private final StorageGridMetrics metrics = new StorageGridMetrics();
 
+    private final StorageGridExecutors executors;
     private final Raccoon raccoon;
     private final String context;
     private final StorageGridTransport transport;
 
     StorageGrid(
             StorageGridConfig config,
+            StorageGridExecutors executors,
             Raccoon raccoon,
             GridOpSerDe gridOpSerDe,
             String context
     ) {
         this.config = config;
+        this.executors = executors;
         this.raccoon = raccoon;
         this.gridOpSerDe = gridOpSerDe;
         this.context = context;
-        this.pendingSubmits = new CompletablePromises<UUID, Boolean>(this.config.requestTimeoutInMs(), "Pending Submission Requests");
-        this.transport = StorageGridTransport.create(this.receiver, this.sender);
-
+        this.submissionScheduler = Schedulers.from(this.executors.getSubmissionExecutor());
+        this.pendingSubmits = new ConcurrentHashMap<>();
+        var observableSending = this.sender.observeOn(Schedulers.from(this.executors.getSendingMessageExecutor()));
+        this.transport = StorageGridTransport.create(this.receiver, observableSending);
+        var observableReceiving = this.receiver;
         this.disposer = Disposer.builder()
                 .addDisposable(this.raccoon)
                 .addSubject(this.sender)
                 .addSubject(this.receiver)
-                .addDisposable(this.receiver.subscribe(message -> {
+                .addDisposable(observableReceiving.subscribe(message -> {
                     logger.trace("{} received message (type: {}) from {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.sourceId.toString().substring(0, 8));
                     if (UuidTools.equals(message.sourceId, this.getLocalEndpointId())) {
                         // multicast dispatch to everywhere, but
@@ -71,7 +81,7 @@ public class StorageGrid implements Disposable {
                     if (message.destinationId == null || UuidTools.equals(message.destinationId, this.getLocalEndpointId())) {
                         this.dispatch(message);
                     } else {
-                        logger.warn("Message destination {} is not for this local endpoint {} {}", message.destinationId, this.getLocalEndpointId());
+//                        logger.warn("Message destination {} is not for this local endpoint {} {}", message.destinationId, this.getLocalEndpointId());
                     }
 
                 }))
@@ -114,42 +124,18 @@ public class StorageGrid implements Disposable {
                 }))
                 .addDisposable(this.raccoon.committedEntries().subscribe(logEntry -> {
                     // message is committed to the quorum of the cluster, so we can dispatch it
-                    logger.trace("{} Committed message is received (leader: {}). commitIndex {}. Message: ", this.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), logEntry.entry());
+                    logger.debug("{} Committed message is received (leader: {}). commitIndex {}. Message: {}", this.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), logEntry.entry());
                     this.dispatch(logEntry.entry());
                 }))
-                .addDisposable(this.raccoon.commitIndexSyncRequests().subscribe(signal -> {
-
+                .addDisposable(this.raccoon.syncRequests().subscribe(signal -> {
                     // this cannot be requested by the leader only the follower, so
                     // we are "sure" that our local endpoint is not the leader endpoint.
-                    UUID requestId = UUID.randomUUID();
-                    var request = new StorageSyncRequest(requestId, this.getLocalEndpointId(), this.getLeaderId());
-                    var operation = StorageSyncOperation.builder()
-                            .setRequestId(requestId)
-                            .setDecoder(this.gridOpSerDe::deserializeStorageSyncResponse)
-                            .setCleanLocalStorageConsumer(storageId -> {
-                                var storageOperations = this.storageOperations.get(storageId);
-                                if (storageOperations == null) {
-                                    logger.warn("{} Not found storage for storageSync response {}", this.context, storageId);
-                                    return;
-                                }
-                                storageOperations.storageLocalClear();
-                                logger.warn("Storage {} is cleaned", storageId);
-                            })
-                            .setProcessNotificationConsumer(this::dispatch)
-                            .build();
-                    if (!this.pendingStorageSyncs.compareAndSet(null, operation)) {
-                        logger.warn("Concurrent storage sync occurred. only one is going to be executed");
-                        return;
+                    try {
+                        var synced = this.executeSync();
+                        synced.thenApply(signal::complete);
+                    } catch (Throwable t) {
+                        this.triggerHamokError(HamokError.FAILED_SYNC, t);
                     }
-                    operation.onCompleted(newCommitIndex -> {
-                        this.raccoon.setCommitIndex(newCommitIndex);
-                        this.pendingStorageSyncs.set(null);
-                    }).onFailed(err -> {
-                        logger.warn("Error occurred while syncing storages", err);
-                        this.pendingStorageSyncs.set(null);
-                    });
-                    var message = this.gridOpSerDe.serializeStorageSyncRequest(request);
-                    this.send(message);
                 }))
                 .onCompleted(() -> {
                     logger.info("{} ({}) is disposed", this.getLocalEndpointId(), this.getContext());
@@ -166,7 +152,7 @@ public class StorageGrid implements Disposable {
             logger.warn("{} ({}) received an unrecognized message {}", this.getLocalEndpointId(), this.context, message);
             return;
         }
-        logger.trace("{} ({}) received message {}", this.getLocalEndpointId(), this.context, message);
+        logger.debug("{} ({}) received message type {} ", this.getLocalEndpointId(), this.context, message.type);
 //        if (UuidTools.equals(this.getLocalEndpointId(), message.sourceId)) {
 //            logger.warn("Self Addressed message?", message);
 //        }
@@ -195,83 +181,17 @@ public class StorageGrid implements Disposable {
                 var voteResponse = this.gridOpSerDe.deserializeRaftVoteResponse(message);
                 this.raccoon.inboundEvents().voteResponse().onNext(voteResponse);
             }
-            case STORAGE_SYNC_REQUEST -> {
-                var request = this.gridOpSerDe.deserializeStorageSyncRequest(message);
-                if (this.getLeaderId() != this.getLocalEndpointId()) {
-                    // not successful
-                    var response = request.createResponse(
-                            -1,
-                            Collections.emptyMap(),
-                            false,
-                            this.getLeaderId(),
-                            -1,
-                            true
-                    );
-                    var responseMessage = this.gridOpSerDe.serializeStorageSyncResponse(response);
-                    this.send(responseMessage);
-                    return;
-                }
-                Map<String, Message> storageUpdateNotifications = new HashMap<>();
-                int sequence = 0;
-                int savedCommitIndex = this.raccoon.getCommitIndex();
-                for (var it = this.storageOperations.values().iterator(); it.hasNext(); ) {
-                    var storageOperations = it.next();
-                    if (storageOperations == null) continue; // not ready
-                    if (storageOperations.getStorageClassSimpleName().equals(ReplicatedStorage.class.getSimpleName())) {
-                        var jt = storageOperations.getAllKeysUpdateNotification(request.sourceEndpointId());
-                        for (; jt.hasNext(); ++sequence) {
-                            var response = request.createResponse(
-                                    savedCommitIndex,
-                                    Map.of(storageOperations.getStorageId(), jt.next()),
-                                    true,
-                                    this.getLeaderId(),
-                                    sequence,
-                                    false
-                            );
-                            var respondingMessage = this.gridOpSerDe.serializeStorageSyncResponse(response);
-                            this.send(respondingMessage);
-                        }
-                    }
-                }
-
-                var response = request.createResponse(
-                        savedCommitIndex,
-                        storageUpdateNotifications,
-                        true,
-                        this.getLeaderId(),
-                        ++sequence,
-                        true
-                );
-                var respondingMessage = this.gridOpSerDe.serializeStorageSyncResponse(response);
-                this.send(respondingMessage);
-            }
-            case STORAGE_SYNC_RESPONSE -> {
-                var response = this.gridOpSerDe.deserializeStorageSyncResponse(message);
-                if (!response.success()) {
-                    logger.info("{} Sending Storage sync again to another leader. prev assumed leader: {}, the leader we send now: {}", this.context, message.sourceId, response.leaderId());
-                    var newRequest = new StorageSyncRequest(response.requestId(), this.getLocalEndpointId(), response.leaderId());
-                    var newMessage = this.gridOpSerDe.serializeStorageSyncRequest(newRequest);
-                    this.send(newMessage);
-                    return;
-                }
-                var pendingSync = this.pendingStorageSyncs.get();
-                if (pendingSync == null) {
-                    logger.warn("{} There is no Storage Sync pending request for requestId {}", this.context, response.requestId());
-                    return;
-                }
-                pendingSync.process(message);
-            }
             case SUBMIT_REQUEST -> {
                 var request = this.gridOpSerDe.deserializeSubmitRequest(message);
-                Schedulers.io().scheduleDirect(() -> {
-                        var success = this.raccoon.submit(request.entry());
-                        logger.debug("{} Creating response for commit {}", this.getLocalEndpointId(), success);
-                        var response = this.gridOpSerDe.serializeSubmitResponse(request.createResponse(
-                                message.sourceId,
-                                success,
-                                this.raccoon.getLeaderId()
-                        ));
-                        this.send(response);
+                this.submissionScheduler.scheduleDirect(() -> {
+                    var submittedMessage = request.entry();
+                    var success = this.raccoon.submit(submittedMessage);
+                    var response = this.gridOpSerDe.serializeSubmitResponse(request.createResponse(
+                            message.sourceId,
+                            success,
+                            this.raccoon.getLeaderId()
+                    ));
+                    this.send(response);
                 });
             }
             case SUBMIT_RESPONSE -> {
@@ -280,7 +200,10 @@ public class StorageGrid implements Disposable {
                     logger.warn("{} No requestId attached for response {}", this.context, message);
                     return;
                 }
-                this.pendingSubmits.resolve(requestId, message.success);
+                var submission = this.pendingSubmits.remove(requestId);
+                if (submission == null) {
+                    logger.warn("No submission was registered for id {}", submission.requestId());
+                }
             }
             default -> {
                 var storageId = message.storageId;
@@ -288,74 +211,72 @@ public class StorageGrid implements Disposable {
                     logger.warn("{} No StorageId is defined for message {}", this.context, message);
                     return;
                 }
-                var storageOperations = this.storageOperations.get(storageId);
-                if (storageOperations == null) {
+                var member = this.actors.get(storageId);
+                if (member == null) {
                     logger.warn("{} No message acceptor for storage {}. Message: {}", this.context, storageId, message);
                     return;
                 }
-                storageOperations.accept(message);
+                member.accept(message);
             }
         }
     }
 
     public <K, V> SeparatedStorageBuilder<K, V> separatedStorage() {
+        return separatedStorage(null);
+    }
+
+    public <K, V> SeparatedStorageBuilder<K, V> separatedStorage(Storage<K, V> baseStorage) {
         var storageGrid = this;
         var operationsBuilder = DistributedStorageOperations.<K, V>builder();
         return new SeparatedStorageBuilder<K, V>()
+                .setStorage(baseStorage)
                 .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
                 .setStorageGrid(storageGrid)
                 .onEndpointBuilt(storageEndpoint -> {
                     operationsBuilder.withEndpoint(storageEndpoint);
                 })
                 .onStorageBuilt(storage -> {
-                    int maxMessageEntries = Math.min(storage.getConfig().maxMessageKeys(), storage.getConfig().maxMessageValues());
-                    var operations = operationsBuilder
-                            .withMaxMessageEntries(maxMessageEntries)
-                            .withStorage(storage).build();
-                    this.storageOperations.put(storage.getId(), operations);
+                    var gridMember = SeparatedStorage.createGridMember(storage);
+                    this.actors.put(gridMember.getIdentifier(), gridMember);
                     storage.events().closingStorage()
-                            .firstElement().subscribe(this.storageOperations::remove);
+                            .firstElement().subscribe(this.actors::remove);
+                    logger.info("Created Separated Storage {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
                 })
                 ;
     }
 
-    public <K, V> FederatedStorageBuilder<K, V> federatedStorage() {
+    public <K, V> PropagatedCollectionsBuilder<K, V, Set<V>> propagatedSets() {
         var storageGrid = this;
-        var operationsBuilder = DistributedStorageOperations.<K, V>builder();
-        return new FederatedStorageBuilder<K, V>()
+        return new PropagatedCollectionsBuilder<K, V, Set<V>>()
                 .setStorageGrid(storageGrid)
-                .onEndpointBuilt(storageEndpoint -> {
-                    operationsBuilder.withEndpoint(storageEndpoint);
-                })
-                .onStorageBuilt(storage -> {
-                    int maxMessageEntries = Math.min(storage.getConfig().maxMessageKeys(), storage.getConfig().maxMessageValues());
-                    var operations = operationsBuilder
-                            .withMaxMessageEntries(maxMessageEntries)
-                            .withStorage(storage).build();
-                    this.storageOperations.put(storage.getId(), operations);
-                    storage.events().closingStorage()
-                            .firstElement().subscribe(this.storageOperations::remove);
+                .setNewCollectionSupplier(HashSet::new)
+                .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
+                .onPropagatedCollectionsBuilt(propagatedCollections -> {
+                    var gridMember = PropagatedCollections.createGridMember(propagatedCollections);
+                    this.actors.put(gridMember.getIdentifier(), gridMember);
+                    propagatedCollections.events().closingStorage()
+                            .firstElement().subscribe(this.actors::remove);
+                    logger.info("Created Propagated Collection {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
                 })
                 ;
     }
 
     public <K, V> ReplicatedStorageBuilder<K, V> replicatedStorage() {
+        return replicatedStorage(null);
+    }
+
+    public <K, V> ReplicatedStorageBuilder<K, V> replicatedStorage(Storage<K, V> baseStorage) {
         var storageGrid = this;
-        var operationsBuilder = DistributedStorageOperations.<K, V>builder();
         return new ReplicatedStorageBuilder<K, V>()
+                .setStorage(baseStorage)
                 .setStorageGrid(storageGrid)
                 .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
-                .onEndpointBuilt(storageEndpoint -> {
-                    operationsBuilder.withEndpoint(storageEndpoint);
-                })
                 .onStorageBuilt(storage -> {
-                    int maxMessageEntries = Math.min(storage.getConfig().maxMessageKeys(), storage.getConfig().maxMessageValues());
-                    var operations = operationsBuilder
-                            .withMaxMessageEntries(maxMessageEntries)
-                            .withStorage(storage).build();
-                    this.storageOperations.put(storage.getId(), operations);
+                    var gridMember = ReplicatedStorage.createGridMember(storage);
+                    this.actors.put(gridMember.getIdentifier(), gridMember);
                     storage.events().closingStorage()
-                            .firstElement().subscribe(this.storageOperations::remove);
+                            .firstElement().subscribe(this.actors::remove);
+                    logger.info("Created Replicatd Storage {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
                 })
                 ;
     }
@@ -392,10 +313,11 @@ public class StorageGrid implements Disposable {
             this.dispatch(message);
             return;
         }
+
         this.sender.onNext(message);
     }
 
-    boolean submit(Message message) {
+    void submit(Message message) {
         message.sourceId = this.getLocalEndpointId();
 //        logger.info("{} submit a message {}", this.getLocalEndpointId(), JsonUtils.objectToString(message));
         var leaderId = this.raccoon.getLeaderId();
@@ -404,31 +326,94 @@ public class StorageGrid implements Disposable {
             this.raccoon.changedLeaderId().firstElement().subscribe(waitForLeader::complete);
             try {
                 var maybeNewLeaderId = waitForLeader.get(3000, TimeUnit.MILLISECONDS);
-                leaderId = maybeNewLeaderId.orElse(null);
+                leaderId = maybeNewLeaderId.orElse(this.raccoon.getLeaderId());
             } catch (Exception e) {
                 logger.warn("{} Exception occurred while waiting for leaders", this.context, e);
             }
 
             if (leaderId == null) {
-                return this.submit(message);
+                this.submit(message);
             }
         }
         var localEndpointId =  this.raccoon.getId();
         if (UuidTools.equals(leaderId, localEndpointId)) {
             logger.debug("{} submitted message is directly routed to the leader", this.getLeaderId());
             // we can submit here.
-            var submitted = this.raccoon.submit(message);
-            return submitted;
+            this.raccoon.submit(message);
+            return;
         }
         // we need to send it to the leader in an embedded message
-        var requestId = UUID.randomUUID();
-        var pendingSubmit = this.pendingSubmits.create(requestId);
-        var record = new SubmitRequest(requestId, leaderId, message);
-        var request = this.gridOpSerDe.serializeSubmitRequest(record);
-
+        var submission = new SubmitRequest(UUID.randomUUID(), leaderId, message);
+        this.pendingSubmits.put(submission.requestId(), submission);
+        var request = this.gridOpSerDe.serializeSubmitRequest(submission);
         this.send(request);
-        var success = this.pendingSubmits.await(requestId).orElse(false);
-        return success;
+    }
+
+    /**
+     * Make the grid to be sync. if no other endpoint is added then
+     * this just returns. if there are available endpoints then this method request a storage sync
+     */
+    public void sync() throws ExecutionException, InterruptedException, TimeoutException {
+        var remoteEndpointIds = this.raccoon.getRemoteEndpointIds();
+        if (remoteEndpointIds.size() < 1) {
+            return;
+        }
+        if (this.getLeaderId() == null) {
+            var holder = new AtomicReference<Disposable>();
+            var wait = new CompletableFuture<Disposable>();
+            wait.thenAccept(disposable -> {
+                disposable.dispose();
+            });
+            var d = this.changedLeaderId().subscribe(o -> {
+                if (o.isEmpty()) return;
+                wait.complete(holder.get());
+            });
+            holder.set(d);
+            wait.get();
+        }
+        this.executeSync().get();
+    }
+
+    private CompletableFuture<Boolean> executeSync() throws TimeoutException, ExecutionException, InterruptedException {
+        var result = new CompletableFuture<Boolean>();
+        if (!this.pendingSync.compareAndSet(null, result)) {
+            return this.pendingSync.get();
+        }
+        this.executors.getSyncOperationExecutor().submit(() -> {
+            var successes = new HashSet<>();
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                for (var actor : this.actors.values()) {
+                    var actorId = actor.getIdentifier();
+                    if (successes.contains(actorId)) {
+                        continue;
+                    }
+                    logger.info("Start executing sync {}", actorId);
+                    var synced = actor.executeSync();
+                    logger.info("Executed sync {} success: {}", actorId, synced);
+                    if (synced) {
+                        successes.add(actorId);
+                    } else {
+                        logger.warn("Unsuccessful synchronization attempt for {}. ", actor.getIdentifier());
+                    }
+                }
+                if (successes.size() < this.actors.size()) {
+                    continue;
+                }
+                break;
+            }
+            this.pendingSync.set(null);
+            var success = this.actors.size() <= successes.size();
+            result.complete(success);
+        });
+        return result;
+    }
+
+    private void triggerHamokError(int code, Throwable exception) {
+        if (!this.errors.hasObservers()) {
+            throw new RuntimeException("Error occurred in operation. code: " + code, exception);
+        }
+        var error = HamokError.create(code, exception);
+        this.errors.onNext(error);
     }
 
     public Observable<UUID> joinedRemoteEndpoints() {
@@ -437,6 +422,10 @@ public class StorageGrid implements Disposable {
 
     public Observable<UUID> detachedRemoteEndpoints() {
         return this.raccoon.detachedRemotePeerId();
+    }
+
+    public Observable<HamokError> errors() {
+        return this.errors;
     }
 
     Observable<Long> inactivatedLocalEndpoint() {
@@ -451,7 +440,11 @@ public class StorageGrid implements Disposable {
         return this.context;
     }
 
-    UUID getLeaderId() {
+    StorageGridExecutors executors() {
+        return this.executors;
+    }
+
+    public UUID getLeaderId() {
         return this.raccoon.getLeaderId();
     }
 

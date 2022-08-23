@@ -7,6 +7,7 @@ import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -27,6 +28,8 @@ public class RaftAppendEntriesRequest {
     private boolean ready = false;
     private RwLock rwLock = new RwLock();
     private int endSeq = -1;
+    private final long createdInSec = Instant.now().getEpochSecond();
+    private int received = 0;
 
     private final AtomicReference<List<Message>> entriesList = new AtomicReference<>(Collections.emptyList());
     private final UUID requestId;

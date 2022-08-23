@@ -4,6 +4,7 @@ import io.github.balazskreith.hamok.StorageFromMap;
 
 import java.util.HashMap;
 import java.util.UUID;
+import java.util.function.BinaryOperator;
 
 public class MemoryStorage<K, V> extends StorageFromMap<K, V> {
 
@@ -17,5 +18,9 @@ public class MemoryStorage<K, V> extends StorageFromMap<K, V> {
 
 	MemoryStorage(String id) {
 		super(id, new HashMap<K, V>());
+	}
+
+	MemoryStorage(String id, BinaryOperator<V> mergeOp) {
+		super(id, new HashMap<K, V>(), mergeOp);
 	}
 }

@@ -17,6 +17,7 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
     Observable<List<ModifiedStorageEntry<K, V>>> deletedEntries();
     Observable<List<ModifiedStorageEntry<K, V>>> expiredEntries();
     Observable<List<ModifiedStorageEntry<K, V>>> evictedEntries();
+    Observable<List<ModifiedStorageEntry<K, V>>> restoredEntries();
     Observable<String> closingStorage();
 
     default CollectedStorageEvents<K, V> observeOn(Supplier<Scheduler> schedulerSupplier) {
@@ -25,6 +26,7 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
         var deletedEntries = PublishSubject.<List<ModifiedStorageEntry<K, V>>>create();
         var expiredEntries = PublishSubject.<List<ModifiedStorageEntry<K, V>>>create();
         var evictedEntries = PublishSubject.<List<ModifiedStorageEntry<K, V>>>create();
+        var restoredEntries = PublishSubject.<List<ModifiedStorageEntry<K, V>>>create();
         var closingStorage = PublishSubject.<String>create();
 
         this.createdEntries().observeOn(schedulerSupplier.get()).subscribe(createdEntries);
@@ -32,6 +34,7 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
         this.deletedEntries().observeOn(schedulerSupplier.get()).subscribe(deletedEntries);
         this.expiredEntries().observeOn(schedulerSupplier.get()).subscribe(expiredEntries);
         this.evictedEntries().observeOn(schedulerSupplier.get()).subscribe(evictedEntries);
+        this.restoredEntries().observeOn(schedulerSupplier.get()).subscribe(restoredEntries);
         this.closingStorage().observeOn(schedulerSupplier.get()).subscribe(closingStorage);
 
         return new CollectedStorageEvents<K, V>() {
@@ -61,6 +64,11 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
             }
 
             @Override
+            public Observable<List<ModifiedStorageEntry<K, V>>> restoredEntries() {
+                return restoredEntries;
+            }
+
+            @Override
             public Observable<String> closingStorage() {
                 return closingStorage;
             }
@@ -72,6 +80,7 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
                                 deletedEntries,
                                 expiredEntries,
                                 evictedEntries,
+                                restoredEntries,
                                 closingStorage
                                 ).stream()
                         .filter(s -> !s.hasComplete() && !s.hasThrowable())
@@ -85,6 +94,7 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
                         deletedEntries,
                         expiredEntries,
                         evictedEntries,
+                        restoredEntries,
                         closingStorage).stream().allMatch(s -> s.hasComplete() || s.hasThrowable());
             }
         };
@@ -97,6 +107,7 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
         var deletedEntry = timeoutController.<ModifiedStorageEntry<K, V>>rxEmitterBuilder().withMaxItems(maxItems).build();
         var expiredEntry = timeoutController.<ModifiedStorageEntry<K, V>>rxEmitterBuilder().withMaxItems(maxItems).build();
         var evictedEntry = timeoutController.<ModifiedStorageEntry<K, V>>rxEmitterBuilder().withMaxItems(maxItems).build();
+        var restoredEntry = timeoutController.<ModifiedStorageEntry<K, V>>rxEmitterBuilder().withMaxItems(maxItems).build();
 
         var closingStorage = PublishSubject.<String>create();
 
@@ -105,6 +116,7 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
         this.deletedEntries().subscribe(deletedEntry);
         this.expiredEntries().subscribe(expiredEntry);
         this.evictedEntries().subscribe(evictedEntry);
+        this.restoredEntries().subscribe(restoredEntry);
         this.closingStorage().subscribe(closingStorage);
 
         return new StorageEvents<K, V>() {
@@ -131,6 +143,11 @@ public interface CollectedStorageEvents<K, V> extends Disposable {
             @Override
             public Observable<ModifiedStorageEntry<K, V>> evictedEntry() {
                 return evictedEntry;
+            }
+
+            @Override
+            public Observable<ModifiedStorageEntry<K, V>> restoredEntry() {
+                return restoredEntry;
             }
 
             @Override

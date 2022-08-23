@@ -69,6 +69,7 @@ public class RxTimeLimitedMap<K, V> extends HashMap<K, V> {
     @Override
     public V remove(Object key) {
         V removed = super.remove(key);
+//        logger.warn("Removed {}, {}, {}", key, this.accessedKeys.get(key), this.get(key));
         if (Objects.isNull(removed)) {
             return null;
         }
@@ -124,6 +125,9 @@ public class RxTimeLimitedMap<K, V> extends HashMap<K, V> {
 
             // here we remove it from the accessedKeys
             it.remove();
+            if (removedValue == null) {
+                continue;
+            }
             var removedKeyValuePair = KeyValuePair.of(key, removedValue);
             this.expiredEntry.onNext(removedKeyValuePair);
         }

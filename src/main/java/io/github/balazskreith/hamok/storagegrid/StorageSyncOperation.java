@@ -1,7 +1,6 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.common.UuidTools;
-import io.github.balazskreith.hamok.mappings.Decoder;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
 import io.github.balazskreith.hamok.storagegrid.messages.StorageSyncResponse;
@@ -13,7 +12,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 public class StorageSyncOperation {
 
@@ -27,16 +28,21 @@ public class StorageSyncOperation {
 
     }
 
+//    record Notification(String storageId, int order, Message notification) {
+//
+//    }
+
     private final Set<Integer> processedSequences = new HashSet<>();
     private final Set<String> cleanedStorageIds = new HashSet<>();
 
+//    private Map<String, List<Notification>> notifications = new HashMap<>();
 
     private int commitIndex = -1;
     private int endSeq = -1;
     private UUID requestId;
     private Consumer<String> cleanLocalStorageConsumer;
     private Consumer<Message> processNotificationConsumer;
-    private Decoder<Message, StorageSyncResponse> decoder;
+    private Function<Message, StorageSyncResponse> decoder;
     private CompletableFuture<Result> promise = new CompletableFuture<>();
 
     private StorageSyncOperation() {
@@ -54,7 +60,7 @@ public class StorageSyncOperation {
         }
         StorageSyncResponse response;
         try {
-            response = this.decoder.decode(message);
+            response = this.decoder.apply(message);
         } catch (Throwable e) {
             logger.warn("Cannot decode message {}", message, e);
             return;
@@ -69,21 +75,51 @@ public class StorageSyncOperation {
         if (Boolean.TRUE.equals(response.lastMessage())) {
             this.endSeq = response.sequence();
         }
+//        logger.info("Received {}", response);
         for (var it = response.storageUpdateNotifications().entrySet().iterator(); it.hasNext(); ) {
             var entry = it.next();
             var storageId = entry.getKey();
             var updateNotification = entry.getValue();
             if (!cleanedStorageIds.contains(storageId)) {
                 this.cleanLocalStorageConsumer.accept(storageId);
+                cleanedStorageIds.add(storageId);
+                logger.debug("Storage {} is cleaned", storageId);
             }
             this.processNotificationConsumer.accept(updateNotification);
+            logger.trace("Update storage {} by {}", storageId, updateNotification.type);
         }
         this.processedSequences.add(response.sequence());
-        if (0 <= this.endSeq && this.endSeq == this.processedSequences.size() - 1) {
+
+        var ready = false;
+        if (this.endSeq == 0) {
+            ready = true;
+        } else {
+            ready = this.endSeq == this.processedSequences.size();
+        }
+        logger.trace("Storage sync is building, {}, ready: {}", this, ready);
+        if (ready) {
             this.promise.complete(new Result(
                     this.commitIndex,
                     null
             ));
+        }
+    }
+
+    @Override
+    public String toString() {
+        return String.format("processed messages: %d, endseq: %d, commitIndex: %d", this.processedSequences.size(), this.endSeq, this.commitIndex);
+    }
+
+    public void await() {
+        if (this.promise.isDone() || this.promise.isCancelled()) {
+            return;
+        }
+        try {
+            this.promise.get();
+        } catch (InterruptedException e) {
+            logger.error("Error occurred while awaitng sync storage operation", e);
+        } catch (ExecutionException e) {
+            logger.error("Error occurred while awaitng sync storage operation", e);
         }
     }
 
@@ -126,7 +162,7 @@ public class StorageSyncOperation {
             return this;
         }
 
-        public Builder setDecoder(Decoder<Message, StorageSyncResponse> decoder) {
+        public Builder setDecoder(Function<Message, StorageSyncResponse> decoder) {
             this.result.decoder = decoder;
             return this;
         }

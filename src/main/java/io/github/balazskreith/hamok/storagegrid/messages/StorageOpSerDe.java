@@ -1,20 +1,25 @@
 package io.github.balazskreith.hamok.storagegrid.messages;
 
 import io.github.balazskreith.hamok.common.KeyValuePair;
-import io.github.balazskreith.hamok.mappings.Codec;
-import io.github.balazskreith.hamok.mappings.Mapper;
 
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class StorageOpSerDe<K, V> {
-    private final Codec<K, byte[]> keyCodec;
-    private final Codec<V, byte[]> valueCodec;
 
-    public StorageOpSerDe(Codec<K, byte[]> keyCodec, Codec<V, byte[]> valueCodec) {
-        this.keyCodec = keyCodec;
-        this.valueCodec = valueCodec;
+    private final Function<K, byte[]> keyEncoder;
+    private final Function<byte[], K> keyDecoder;
+    private final Function<V, byte[]> valueEncoder;
+    private final Function<byte[], V> valueDecoder;
+
+    public StorageOpSerDe(Function<K, byte[]> keyEncoder, Function<byte[], K> keyDecoder, Function<V, byte[]> valueEncoder, Function<byte[], V> valueDecoder) {
+        this.keyEncoder = keyEncoder;
+        this.keyDecoder = keyDecoder;
+        this.valueEncoder = valueEncoder;
+        this.valueDecoder = valueDecoder;
     }
+
 
     public Message serializeClearEntriesNotification(ClearEntriesNotification notification) {
         var result = new Message();
@@ -273,17 +278,32 @@ public class StorageOpSerDe<K, V> {
         );
     }
 
+    public Message serializeRemoveEntriesNotification(RemoveEntriesNotification<K, V> notification) {
+        var result = new Message();
+        var serializedEntries = this.serializeEntries(notification.entries());
+        result.type = MessageType.REMOVE_ENTRIES_NOTIFICATION.name();
+        result.keys = serializedEntries.getKey();
+        result.values = serializedEntries.getValue();
+        return result;
+    }
+
+    public RemoveEntriesNotification<K, V> deserializeRemoveEntriesNotification(Message message) {
+        var entries = this.deserializeEntries(message.keys, message.values);
+        return new RemoveEntriesNotification<>(
+                entries,
+                message.sourceId
+        );
+    }
+
     public KeyValuePair<List<byte[]>, List<byte[]>> serializeEntries(Map<K, V> entries) {
         if (entries == null || entries.size() < 1) {
             return KeyValuePair.of(Collections.EMPTY_LIST, Collections.EMPTY_LIST);
         }
-        var keyEncoder = Mapper.create(this.keyCodec::encode);
-        var valueEncoder = Mapper.create(this.valueCodec::encode);
         var keys = new LinkedList<byte[]>();
         var values = new LinkedList<byte[]>();
         entries.forEach((entryKey, entryValue) -> {
-            var key = keyEncoder.map(entryKey);
-            var value = valueEncoder.map(entryValue);
+            var key = this.keyEncoder.apply(entryKey);
+            var value = this.valueEncoder.apply(entryValue);
             if (entryKey == null || entryValue == null) {
                 return;
             }
@@ -294,14 +314,14 @@ public class StorageOpSerDe<K, V> {
     }
 
     public Map<K, V> deserializeEntries(List<byte[]> keys, List<byte[]> values) {
-        var keyDecoder = Mapper.create(this.keyCodec::decode);
-        var valueDecoder = Mapper.create(this.valueCodec::decode);
         var result = new HashMap<K, V>();
-        for (int i = 0, c = Math.min(keys.size(), values.size()); i < c; ++i) {
-            var foundKey = keys.get(i);
-            var foundValue = values.get(i);
-            var entryKey = keyDecoder.map(foundKey);
-            var entryValue = valueDecoder.map(foundValue);
+        var keyIt = keys.iterator();
+        var valuesIt = values.iterator();
+        while (keyIt.hasNext() && valuesIt.hasNext()) {
+            var foundKey = keyIt.next();
+            var foundValue = valuesIt.next();
+            var entryKey = this.keyDecoder.apply(foundKey);
+            var entryValue = this.valueDecoder.apply(foundValue);
             if (entryKey != null && entryValue != null) {
                 result.put(entryKey, entryValue);
             }
@@ -313,9 +333,8 @@ public class StorageOpSerDe<K, V> {
         if (keys == null || keys.size() < 1) {
             return Collections.EMPTY_LIST;
         }
-        var keyEncoder = Mapper.create(this.keyCodec::encode);
         return keys.stream()
-                .map(keyEncoder::map)
+                .map(this.keyEncoder)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
     }
@@ -324,11 +343,11 @@ public class StorageOpSerDe<K, V> {
         if (keys == null || keys.size() < 1) {
             return Collections.EMPTY_SET;
         }
-        var keyDecoder = Mapper.create(this.keyCodec::decode);
         return keys.stream()
-                .map(keyDecoder::map)
+                .map(this.keyDecoder)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
     }
+
 
 }

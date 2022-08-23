@@ -1,17 +1,16 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.common.UuidTools;
-import io.github.balazskreith.hamok.mappings.Codec;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.function.BinaryOperator;
+import java.util.function.Function;
 
 @DisplayName("Replicated Storage Working Test Scenario. While replicated storages are distributed through the grid, endpoint can be joined and detached, but the storage should work as expected.")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -51,21 +50,22 @@ class ReplicatedStorageFunctionalTest {
                 .withContext("US east")
                 .withRaftMaxLogRetentionTimeInMs(EXPIRATION_TIME_IN_MS)
                 .build();
-
-        var keyCodec = Codec.<String, byte[]>create(str -> str.getBytes(StandardCharsets.UTF_8), bytes -> new String(bytes));
-        var valueCodec = Codec.<Integer, byte[]>create(i -> ByteBuffer.allocate(4).putInt(i).array(), arr -> ByteBuffer.wrap(arr).getInt());
+        Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
+        Function<byte[], Integer> intDec = b -> ByteBuffer.wrap(b).getInt();
+        Function<String, byte[]> strEnc = s -> s.getBytes();
+        Function<byte[], String> strDec = b -> new String(b);
         BinaryOperator<Integer> mergeOp = (itemsFromStockPile1, itemsFromStockPile2) -> itemsFromStockPile1 + itemsFromStockPile2;
 
         bcnStockpile = euWest.<String, Integer>replicatedStorage()
                 .setStorageId(STORAGE_ID)
-                .setKeyCodecSupplier(() -> keyCodec)
-                .setValueCodecSupplier(() -> valueCodec)
+                .setKeyCodec(strEnc, strDec)
+                .setValueCodec(intEnc, intDec)
                 .build();
 
         nyStockpile = usEast.<String, Integer>replicatedStorage()
                 .setStorageId(STORAGE_ID)
-                .setKeyCodecSupplier(() -> keyCodec)
-                .setValueCodecSupplier(() -> valueCodec)
+                .setKeyCodec(strEnc, strDec)
+                .setValueCodec(intEnc, intDec)
                 .build();
 
         Assertions.assertTrue(bcnStockpile.isEmpty());
@@ -175,14 +175,15 @@ class ReplicatedStorageFunctionalTest {
                 .withContext("AS east")
                 .build();
 
-        var keyCodec = Codec.<String, byte[]>create(str -> str.getBytes(StandardCharsets.UTF_8), bytes -> new String(bytes));
-        var valueCodec = Codec.<Integer, byte[]>create(i -> ByteBuffer.allocate(4).putInt(i).array(), arr -> ByteBuffer.wrap(arr).getInt());
-        BinaryOperator<Integer> mergeOp = (itemsFromStockPile1, itemsFromStockPile2) -> itemsFromStockPile1 + itemsFromStockPile2;
+        Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
+        Function<byte[], Integer> intDec = b -> ByteBuffer.wrap(b).getInt();
+        Function<String, byte[]> strEnc = s -> s.getBytes();
+        Function<byte[], String> strDec = b -> new String(b);
 
         hkStockpile = asEast.<String, Integer>replicatedStorage()
                 .setStorageId(STORAGE_ID)
-                .setKeyCodecSupplier(() -> keyCodec)
-                .setValueCodecSupplier(() -> valueCodec)
+                .setKeyCodec(strEnc, strDec)
+                .setValueCodec(intEnc, intDec)
                 .build();
 
         var euWestIsReady = new CompletableFuture<UUID>();
@@ -320,27 +321,30 @@ class ReplicatedStorageFunctionalTest {
         }
     }
 
-    @Test
-    @Order(13)
-    @DisplayName("When asEast returns after log entries expired Then it requires a storagesync and stores only the data usEast and euWest stores")
-    void test_13() throws InterruptedException, ExecutionException, TimeoutException {
-        var countdown = new CountDownLatch(3);
-        var started = new CompletableFuture<UUID>();
-        asEast.joinedRemoteEndpoints().subscribe(started::complete);
-        hkStockpile.events().createdEntry().subscribe(e -> countdown.countDown());
 
-        Thread.sleep((long) (EXPIRATION_TIME_IN_MS * 1.5));
-        this.router.enable(asEast.getLocalEndpointId());
 
-        started.get(20000, TimeUnit.MILLISECONDS);
 
-        if (!countdown.await(20000, TimeUnit.MILLISECONDS)) {
-            throw new RuntimeException("Did not reached countdown: " + countdown.getCount());
-        }
-
-        Assertions.assertEquals(GOLD_STOCKPILE_VALUE, hkStockpile.get(GOLD_STOCKPILE_KEY));
-        Assertions.assertEquals(SILVER_STOCKPILE_VALUE, hkStockpile.get(SILVER_STOCKPILE_KEY));
-        Assertions.assertEquals(BRONZE_STOCKPILE_VALUE, hkStockpile.get(BRONZE_STOCKPILE_KEY));
-    }
+//    @Test
+//    @Order(14)
+//    @DisplayName("When asEast returns after log entries expired Then it requires a storagesync and stores only the data usEast and euWest stores")
+//    void test_14() throws InterruptedException, ExecutionException, TimeoutException {
+//        var countdown = new CountDownLatch(3);
+//        var started = new CompletableFuture<UUID>();
+//        asEast.joinedRemoteEndpoints().subscribe(started::complete);
+//        hkStockpile.events().createdEntry().subscribe(e -> countdown.countDown());
+//
+//        Thread.sleep((long) (EXPIRATION_TIME_IN_MS * 1.5));
+//        this.router.enable(asEast.getLocalEndpointId());
+//
+//        started.get(20000, TimeUnit.MILLISECONDS);
+//
+//        if (!countdown.await(20000, TimeUnit.MILLISECONDS)) {
+//            throw new RuntimeException("Did not reached countdown: " + countdown.getCount());
+//        }
+//
+//        Assertions.assertEquals(GOLD_STOCKPILE_VALUE, hkStockpile.get(GOLD_STOCKPILE_KEY));
+//        Assertions.assertEquals(SILVER_STOCKPILE_VALUE, hkStockpile.get(SILVER_STOCKPILE_KEY));
+//        Assertions.assertEquals(BRONZE_STOCKPILE_VALUE, hkStockpile.get(BRONZE_STOCKPILE_KEY));
+//    }
 
 }

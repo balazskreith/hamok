@@ -83,23 +83,28 @@ class StorageGridRouter {
             if (source == null) {
                 logger.warn("Cannot find source {} in router", source.endpointId);
             } else if (source.enabled == false) {
-                logger.info("Blocked message from {} type: {}, protocol: {} to {}, because the source is disabled", source.endpointId, message.type, message.protocol, message.destinationId);
+                logger.trace("Blocked message from {} type: {}, protocol: {} to {}, because the source is disabled", source.endpointId, message.type, message.protocol, message.destinationId);
                 return;
             }
+            var notRouted = true;
             for (var it = this.transports.values().iterator(); it.hasNext(); ) {
                 var transport = it.next();
                 if (UuidTools.equals(message.sourceId, transport.endpointId)) {
                     continue;
                 }
                 if (!transport.enabled) {
-                    logger.info("Blocked message from {} to (transport id: {}, message destination: {}), type: {}, protocol: {}, because the destination is disabled", source.endpointId, transport.endpointId, message.destinationId,  message.type, message.protocol);
+                    logger.trace("Blocked message from {} to (transport id: {}, message destination: {}), type: {}, protocol: {}, because the destination is disabled", source.endpointId, transport.endpointId, message.destinationId,  message.type, message.protocol);
                     continue;
                 }
                 if (message.destinationId == null || UuidTools.equals(message.destinationId, transport.endpointId)) {
                     transport.transport.getReceiver().onNext(message);
-                    logger.info("Message is routed from {} to {} type: {}, protocol {}", source.endpointId, transport.endpointId, message.type, message.protocol);
+                    notRouted = false;
                 }
             }
+            if (notRouted) {
+                logger.warn("Message is NOT routed from {} type: {}, protocol {}", source.endpointId, message.type, message.protocol);
+            }
+
         });
     }
 

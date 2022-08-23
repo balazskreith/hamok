@@ -102,11 +102,20 @@ public enum MessageType {
     DELETE_ENTRIES_NOTIFICATION,
 
     /**
+     * Notification to remove specific entries from the storage.
+     * the difference between delete and remove that remove send the values
+     * specifically need to be removed and delete only send the keys. It is useful for distributed collections
+     *
+     */
+    REMOVE_ENTRIES_NOTIFICATION,
+
+    /**
      * Clear entries notification
      */
     CLEAR_ENTRIES_NOTIFICATION,
 
     ;
+
 
 
 

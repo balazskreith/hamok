@@ -13,6 +13,7 @@ public class Events implements Disposable {
 
     private static final Logger logger = LoggerFactory.getLogger(Events.class);
 
+//    private final
     private final Subject<RaftVoteResponse> voteResponse = PublishSubject.<RaftVoteResponse>create().toSerialized();
     private final Subject<RaftVoteRequest> voteRequests = PublishSubject.<RaftVoteRequest>create().toSerialized();
     private final Subject<RaftAppendEntriesRequestChunk> appendEntriesRequest = PublishSubject.<RaftAppendEntriesRequestChunk>create().toSerialized();

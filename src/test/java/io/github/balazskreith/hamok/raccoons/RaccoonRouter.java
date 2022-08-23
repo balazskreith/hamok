@@ -64,6 +64,7 @@ class RaccoonRouter {
                 }
                 if (!peer.enabled()) {
                     logger.info("appendEntriesRequest from {} to {} is blocked, because the target is disabled", sourcePeer.peerId(), targetPeerId);
+                    continue;
                 }
                 logger.info("{} sending appendEntriesRequest to {}. {}", sourcePeer.peerId(), targetPeerId, request);
                 peer.racoon.inboundEvents().appendEntriesRequests().onNext(request);

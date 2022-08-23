@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 abstract class AbstractState implements Runnable {
 
@@ -40,6 +41,9 @@ abstract class AbstractState implements Runnable {
         this.base.outboundEvents.voteRequests().onNext(request);
     }
 
+    protected void commitLogEntry(LogEntry logEntry) {
+        this.base.committedEntries.onNext(logEntry);
+    }
 
     protected void sendVoteResponse(RaftVoteResponse response) {
         this.base.outboundEvents.voteResponse().onNext(response);
@@ -104,28 +108,31 @@ abstract class AbstractState implements Runnable {
         return this.base.getLeaderId();
     }
 
-    protected void requestCommitIndexSync(UUID leaderId) {
-        this.base.requestCommitIndexSync();
+    protected CompletableFuture<Boolean> requestStorageSync() {
+        return this.base.requestStorageSync();
     }
 
     protected void inactivatedLocalPeerId() {
         this.base.signalInactivatedLocalPeer();
     }
 
-
     protected void sendEndpointStateNotification(Set<UUID> remotePeerIds) {
         if (remotePeerIds == null || remotePeerIds.size() < 1) {
             return;
         }
+
         var remotePeers = this.remotePeers();
         var activePeerIds = SetUtils.combineAll(remotePeers.getActiveRemotePeerIds(), Set.of(this.getLocalPeerId()));
-        var inactiveRemotePeerIds = remotePeers.getInActiveRemotePeerIds();
+        var logs = logs();
         for (var remotePeerId : remotePeerIds) {
             var notification = new EndpointStatesNotification(
                     this.getLocalPeerId(),
                     activePeerIds,
-                    inactiveRemotePeerIds,
-                    remotePeerId
+                    logs.size(),
+                    logs.getNextIndex(),
+                    logs.getCommitIndex(),
+                    remotePeerId,
+                    syncedProperties().currentTerm.get()
             );
             this.base.outboundEvents.endpointStateNotifications().onNext(notification);
 

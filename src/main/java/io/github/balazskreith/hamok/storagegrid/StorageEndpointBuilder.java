@@ -12,6 +12,8 @@ import java.util.function.Supplier;
 public class StorageEndpointBuilder<U, R> {
     private volatile boolean built = false;
     private final StorageEndpoint<U, R> result = new StorageEndpoint<>();
+    private int maxMessageKeys = 0;
+    private int maxMessageValues = 0;
 
     StorageEndpointBuilder() {
 
@@ -47,11 +49,26 @@ public class StorageEndpointBuilder<U, R> {
         return this;
     }
 
+    StorageEndpointBuilder<U, R> setMaxMessageKeys(int value) {
+        this.maxMessageKeys = value;
+        return this;
+    }
+
+    StorageEndpointBuilder<U, R> setMaxMessageValues(int value) {
+        this.maxMessageValues = value;
+        return this;
+    }
+
     public StorageEndpoint<U, R> build() {
         if (this.built) throw new IllegalStateException("Cannot build twice");
         Objects.requireNonNull(this.result.storageId, "StorageId cannot be null");
         Objects.requireNonNull(this.result.grid, "storageGrid must be defined");
         Objects.requireNonNull(this.result.depotProvider, "Depot provider must be given");
+        if (this.maxMessageKeys < 1 && this.maxMessageValues < 1) {
+            this.result.responseMessageChunker = ResponseMessageChunker.createSelfIteratorProvider();
+        } else {
+            this.result.responseMessageChunker = new ResponseMessageChunker(this.maxMessageKeys, this.maxMessageValues);
+        }
         this.result.init();
         try {
             return this.result;

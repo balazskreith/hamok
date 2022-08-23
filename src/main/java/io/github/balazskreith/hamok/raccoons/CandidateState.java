@@ -31,6 +31,7 @@ class CandidateState extends AbstractState {
         super(racoon);
         this.prevTimedOutElection = prevTimedOutElection;
         this.electionTerm = this.syncedProperties().currentTerm.get() + 1;
+        this.setActualLeaderId(null);
     }
 
 
@@ -60,7 +61,7 @@ class CandidateState extends AbstractState {
             return;
         }
         if (response.term() < electionTerm) {
-            logger.info("{} A vote response from a term smaller than the current is received: {}", this.getLocalPeerId(), response);
+            logger.warn("A vote response from a term smaller than the current is received: {}", response);
             return;
         }
         respondedRemotePeerIds.add(response.sourcePeerId());
@@ -70,9 +71,9 @@ class CandidateState extends AbstractState {
 
         int receivedVotes = this.receivedVotes.incrementAndGet();
         int numberOfPeerIds = this.remotePeers().size() + 1; // +1, because of a local racoon!
-        logger.debug("{} Received vote for leadership: {}, number of peers: {}. a: {} ina: {}", this.getLocalPeerId(), receivedVotes, numberOfPeerIds,
-                String.join(",", remotePeers().getActiveRemotePeerIds().stream().map(Object::toString).collect(Collectors.toList())),
-                String.join(",", remotePeers().getInActiveRemotePeerIds().stream().map(Object::toString).collect(Collectors.toList())));
+        logger.debug("Received vote for leadership: {}, number of peers: {}. activeRemoteEndpointIds: {}", receivedVotes, numberOfPeerIds,
+                String.join(",", remotePeers().getActiveRemotePeerIds().stream().map(Object::toString).collect(Collectors.toList()))
+        );
         if (numberOfPeerIds < receivedVotes * 2) {
             this.wonTheElection = true;
         }
@@ -114,17 +115,14 @@ class CandidateState extends AbstractState {
         }
         if (config.electionTimeoutInMs() < elapsedTimeInMs) {
             // election timeout
-            logger.warn("{} Timeout occurred during the election process (electionTimeoutInMs: {}, elapsedTimeInMs: {}). This can be a result because of split vote. previously timed out elections: {}. elapsedTimeInMs: {}", this.getLocalPeerId(), config.electionTimeoutInMs(), elapsedTimeInMs, this.prevTimedOutElection, elapsedTimeInMs);
+            logger.warn("{} Timeout occurred during the election process (electionTimeoutInMs: {}, elapsedTimeInMs: {}, respondedRemotePeerIds: {}). This can be a result because of split vote. previously timed out elections: {}. elapsedTimeInMs: {}", this.getLocalPeerId(), config.electionTimeoutInMs(), elapsedTimeInMs, this.respondedRemotePeerIds.size(), this.prevTimedOutElection, elapsedTimeInMs);
             if (config.autoDiscovery()) {
-                // if we in auto discovery mode, then we need to investigate who replied and who odes not.
-                var remotePeers = this.remotePeers();
-                var remotePeerIds = remotePeers.getActiveRemotePeerIds();
-                for (var remotePeerId : remotePeerIds) {
-                    if (respondedRemotePeerIds.contains(remotePeerId)) {
-                        continue;
-                    }
-                    logger.warn("Detach endpoint {} at candidate state at endpoint: {}", remotePeerId, this.getLocalPeerId());
-                    remotePeers.detach(remotePeerId);
+                // if we have performed a numerous election, but no one has responded,
+                // then we need to assume we fall out from the grid
+                if (respondedRemotePeerIds.size() < 1 && 2 < this.prevTimedOutElection) {
+                    remotePeers().reset();
+                    this.follow();
+                    return;
                 }
             }
             this.follow(this.prevTimedOutElection + 1);

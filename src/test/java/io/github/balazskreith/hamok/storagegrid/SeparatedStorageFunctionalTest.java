@@ -1,17 +1,16 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.common.UuidTools;
-import io.github.balazskreith.hamok.mappings.Codec;
 import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.function.BinaryOperator;
+import java.util.function.Function;
 
 @DisplayName("Separated Storage Working Test Scenario. While separated storages are distributed through the grid, endpoint can be joined and detached, but the storage should work as expected.")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -49,24 +48,26 @@ class SeparatedStorageFunctionalTest {
                 .withRaftMaxLogRetentionTimeInMs(30000)
                 .build();
 
-        var keyCodec = Codec.<String, byte[]>create(str -> str.getBytes(StandardCharsets.UTF_8), bytes -> new String(bytes));
-        var valueCodec = Codec.<Integer, byte[]>create(i -> ByteBuffer.allocate(4).putInt(i).array(), arr -> ByteBuffer.wrap(arr).getInt());
+        Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
+        Function<byte[], Integer> intDec = b -> ByteBuffer.wrap(b).getInt();
+        Function<String, byte[]> strEnc = s -> s.getBytes();
+        Function<byte[], String> strDec = b -> new String(b);
         BinaryOperator<Integer> mergeOp = (itemsFromStockPile1, itemsFromStockPile2) -> itemsFromStockPile1 + itemsFromStockPile2;
 
         bcnStockpile = euWest.<String, Integer>separatedStorage()
                 .setStorageId(STORAGE_ID)
                 .setMaxCollectedStorageEvents(1)
                 .setMaxCollectedStorageTimeInMs(0)
-                .setKeyCodecSupplier(() -> keyCodec)
-                .setValueCodecSupplier(() -> valueCodec)
+                .setKeyCodec(strEnc, strDec)
+                .setValueCodec(intEnc, intDec)
                 .build();
 
         nyStockpile = usEast.<String, Integer>separatedStorage()
                 .setStorageId(STORAGE_ID)
                 .setMaxCollectedStorageEvents(1)
                 .setMaxCollectedStorageTimeInMs(0)
-                .setKeyCodecSupplier(() -> keyCodec)
-                .setValueCodecSupplier(() -> valueCodec)
+                .setKeyCodec(strEnc, strDec)
+                .setValueCodec(intEnc, intDec)
                 .build();
 
         Assertions.assertTrue(bcnStockpile.isEmpty());
@@ -110,9 +111,6 @@ class SeparatedStorageFunctionalTest {
         Assertions.assertEquals(1, nyStockpile.localSize());
         Assertions.assertEquals(GOLD_STOCKPILE_VALUE, bcnStockpile.localIterator().next().getValue());
         Assertions.assertEquals(SILVER_STOCKPILE_VALUE, nyStockpile.localIterator().next().getValue());
-
-        Assertions.assertEquals(GOLD_STOCKPILE_VALUE, bcnStockpile.iterator().next().getValue());
-        Assertions.assertEquals(SILVER_STOCKPILE_VALUE, nyStockpile.iterator().next().getValue());
     }
 
     @Test
@@ -143,16 +141,18 @@ class SeparatedStorageFunctionalTest {
                 .withContext("AS east")
                 .build();
 
-        var keyCodec = Codec.<String, byte[]>create(str -> str.getBytes(StandardCharsets.UTF_8), bytes -> new String(bytes));
-        var valueCodec = Codec.<Integer, byte[]>create(i -> ByteBuffer.allocate(4).putInt(i).array(), arr -> ByteBuffer.wrap(arr).getInt());
+        Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
+        Function<byte[], Integer> intDec = b -> ByteBuffer.wrap(b).getInt();
+        Function<String, byte[]> strEnc = s -> s.getBytes();
+        Function<byte[], String> strDec = b -> new String(b);
         BinaryOperator<Integer> mergeOp = (itemsFromStockPile1, itemsFromStockPile2) -> itemsFromStockPile1 + itemsFromStockPile2;
 
         hkStockpile = asEast.<String, Integer>separatedStorage()
                 .setStorageId(STORAGE_ID)
                 .setMaxCollectedStorageEvents(1)
                 .setMaxCollectedStorageTimeInMs(0)
-                .setKeyCodecSupplier(() -> keyCodec)
-                .setValueCodecSupplier(() -> valueCodec)
+                .setKeyCodec(strEnc, strDec)
+                .setValueCodec(intEnc, intDec)
                 .build();
 
         var euWestIsReady = new CompletableFuture<UUID>();
@@ -254,7 +254,7 @@ class SeparatedStorageFunctionalTest {
         this.router.disable(asEast.getLocalEndpointId());
 
         CompletableFuture.allOf(stopped_1, stopped_2, leaderElected).get(20000, TimeUnit.MILLISECONDS);
-        if (!detachedEndpoints.await(20000, TimeUnit.MILLISECONDS)) {
+        if (!detachedEndpoints.await(30000, TimeUnit.MILLISECONDS)) {
             throw new IllegalStateException("usEast has not detached endpoints");
         }
 
@@ -265,20 +265,16 @@ class SeparatedStorageFunctionalTest {
         Assertions.assertEquals(BRONZE_STOCKPILE_VALUE, nyStockpile.get(BRONZE_STOCKPILE_KEY));
     }
 
-    @Test
-    @Order(11)
-    @DisplayName("When asEast returns to the grid, it is reset and storage is empty")
-    void test_11() throws ExecutionException, InterruptedException, TimeoutException {
-        var started = new CompletableFuture<UUID>();
-        asEast.joinedRemoteEndpoints().subscribe(started::complete);
-        this.router.enable(asEast.getLocalEndpointId());
-
-        started.get(20000, TimeUnit.MILLISECONDS);
-
-        Thread.sleep(1000);
-
-        Assertions.assertEquals(0, hkStockpile.localSize());
-    }
+//    @Test
+//    @Order(11)
+//    @DisplayName("When asEast returns to the grid, it is synced")
+//    void test_11() throws ExecutionException, InterruptedException, TimeoutException {
+//        var started = new CompletableFuture<UUID>();
+//        asEast.joinedRemoteEndpoints().subscribe(started::complete);
+//        this.router.enable(asEast.getLocalEndpointId());
+//
+//        started.get(20000, TimeUnit.MILLISECONDS);
+//    }
 
 //    @Test
 //    @Order(9)

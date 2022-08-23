@@ -5,6 +5,7 @@ import io.github.balazskreith.hamok.raccoons.events.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -24,18 +25,23 @@ public class GridOpSerDe {
         result.sourceId = notification.sourceEndpointId();
         result.destinationId = notification.destinationEndpointId();
         result.activeEndpointIds = notification.activeEndpointIds().stream().collect(Collectors.toList());
-        result.inactiveEndpointIds = notification.inactiveEndpointIds().stream().collect(Collectors.toList());
+        result.raftCommitIndex = notification.commitIndex();
+        result.raftLeaderNextIndex = notification.leaderNextIndex();
+        result.storageSize = notification.numberOfLogs();
+        result.raftTerm = notification.term();
         return result;
     }
 
     public EndpointStatesNotification deserializeEndpointStatesNotification(Message message) {
         var activeEndpointIds = message.activeEndpointIds.stream().collect(Collectors.toSet());
-        var inactiveEndpointIds = message.inactiveEndpointIds.stream().collect(Collectors.toSet());
         return new EndpointStatesNotification(
                 message.sourceId,
                 activeEndpointIds,
-                inactiveEndpointIds,
-                message.destinationId
+                message.storageSize,
+                message.raftLeaderNextIndex,
+                message.raftCommitIndex,
+                message.destinationId,
+                message.raftTerm
         );
     }
 
@@ -49,7 +55,7 @@ public class GridOpSerDe {
         result.raftPrevLogTerm = request.prevLogTerm();
         result.raftPrevLogIndex = request.prevLogIndex();
         result.raftTerm = request.term();
-        result.raftEntries = request.entry() == null ? Collections.emptyList() : List.of(request.entry());
+        result.embeddedMessages = request.entry() == null ? Collections.emptyList() : List.of(request.entry());
         result.requestId = request.requestId();
         result.sequence = request.sequence();
         result.lastMessage = request.lastMessage();
@@ -58,9 +64,9 @@ public class GridOpSerDe {
 
     public RaftAppendEntriesRequestChunk deserializeRaftAppendRequestChunk(Message message) {
         Message entry = null;
-        if (message.raftEntries != null && 0 < message.raftEntries.size()) {
-            entry = message.raftEntries.get(0);
-            if (1 < message.raftEntries.size()) {
+        if (message.embeddedMessages != null && 0 < message.embeddedMessages.size()) {
+            entry = message.embeddedMessages.get(0);
+            if (1 < message.embeddedMessages.size()) {
                 logger.warn("More than one message received for RaftAppendRequestChunk. Only the first one will be processed");
             }
         }
@@ -83,6 +89,7 @@ public class GridOpSerDe {
         var result = new Message();
         result.type = MessageType.RAFT_APPEND_ENTRIES_RESPONSE.name();
         result.success = response.success();
+        result.requestId = response.requestId();
         result.raftTerm = response.term();
         result.destinationId = response.destinationPeerId();
         result.raftPeerNextIndex = response.peerNextIndex();
@@ -94,6 +101,7 @@ public class GridOpSerDe {
         return new RaftAppendEntriesResponse(
                 message.sourceId,
                 message.destinationId,
+                message.requestId,
                 message.raftTerm,
                 message.success,
                 message.raftPeerNextIndex,
@@ -144,15 +152,15 @@ public class GridOpSerDe {
         var result = new Message();
         result.type = MessageType.SUBMIT_REQUEST.name();
         result.requestId = request.requestId();
-        result.raftEntries = List.of(request.entry());
+        result.embeddedMessages = List.of(request.entry());
         result.destinationId = request.destinationId();
         return result;
     }
 
     public SubmitRequest deserializeSubmitRequest(Message message) {
         Message entry = null;
-        if (message.raftEntries != null && 0 < message.raftEntries.size()) {
-            entry = message.raftEntries.get(0);
+        if (message.embeddedMessages != null && 0 < message.embeddedMessages.size()) {
+            entry = message.embeddedMessages.get(0);
         }
         return new SubmitRequest(
                 message.requestId,
@@ -214,12 +222,12 @@ public class GridOpSerDe {
 
     public StorageSyncResponse deserializeStorageSyncResponse(Message message) {
         var storageUpdateNotifications = new HashMap<String, Message>();
-        if (message.keys != null && message.raftEntries != null) {
-            var length = Math.min(message.keys.size(), message.raftEntries.size());
+        if (message.keys != null && message.embeddedMessages != null) {
+            var length = Math.min(message.keys.size(), message.embeddedMessages.size());
             for (int i = 0; i < length; ++i) {
                 var bytes = message.keys.get(i);
-                var storageId = bytes != null ? new String(bytes) : "";
-                storageUpdateNotifications.put(storageId, message.raftEntries.get(i));
+                var storageId = bytes != null ? new String(bytes, StandardCharsets.UTF_8) : "";
+                storageUpdateNotifications.put(storageId, message.embeddedMessages.get(i));
             }
         }
         return new StorageSyncResponse(
@@ -247,15 +255,15 @@ public class GridOpSerDe {
 
         if (response.storageUpdateNotifications() != null) {
             result.keys = new LinkedList<>();
-            result.raftEntries = new LinkedList<>();
+            result.embeddedMessages = new LinkedList<>();
             for (var entry : response.storageUpdateNotifications().entrySet()) {
-                var bytes = entry.getKey();
-                var storageId = bytes != null ? new String(bytes) : "";
-                result.raftEntries.add(entry.getValue());
+                var storageId = entry.getKey();
+                result.keys.add(storageId.getBytes(StandardCharsets.UTF_8));
+                result.embeddedMessages.add(entry.getValue());
             }
         } else {
             result.keys = Collections.emptyList();
-            result.raftEntries = Collections.emptyList();
+            result.embeddedMessages = Collections.emptyList();
         }
         return result;
     }

@@ -3,12 +3,11 @@ package io.github.balazskreith.hamok.common;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.function.*;
 import java.util.stream.Collector;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static java.util.Objects.requireNonNull;
 
@@ -23,8 +22,31 @@ public abstract class BatchCollector<T, R extends Collection<T>> implements Coll
 
     public static final Logger logger = LoggerFactory.getLogger(BatchCollector.class);
 
-    public static Builder builder() {
-        return new Builder();
+    public static<K, U extends Collection<K>> Builder<K, U> builder() {
+        return new Builder<K, U>();
+    }
+
+
+    public static<K, V> Stream<Map<K, V>> batchedStream(Map<K, V> source, int batchSize) {
+        if (source == null) {
+            return Stream.empty();
+        }
+        if (source.size() < batchSize) {
+            return Stream.of(source);
+        }
+        var result = Stream.<Map<K, V>>builder();
+        var collector = BatchCollector.<Map.Entry<K, V>, Set<Map.Entry<K, V>>>builder().withBatchSize(batchSize)
+                .withEmptyCollectionSupplier(Collections::emptySet)
+                .withMutableCollectionSupplier(HashSet::new)
+                .withConsumer(batch -> {
+                    var entryBatch = batch.stream().collect(Collectors.toMap(
+                            Map.Entry::getKey,
+                            Map.Entry::getValue
+                    ));
+                    result.add(entryBatch);
+                }).build();
+        source.entrySet().stream().collect(collector);
+        return result.build();
     }
 
     /**
@@ -36,7 +58,7 @@ public abstract class BatchCollector<T, R extends Collection<T>> implements Coll
      * @return a batch collector instance
      */
     public static <T, R extends Collection<T>> Collector<T, R, R> makeCollector(int batchSize, Consumer<R> batchProcessor) {
-        return builder()
+        return BatchCollector.<T, R>builder()
                 .withBatchSize(batchSize)
                 .withConsumer(batchProcessor)
                 .build();

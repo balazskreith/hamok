@@ -79,11 +79,11 @@ class RaftLogsTest {
         this.follower_2 = Raccoon.builder().withLogsExpirationTimeInMs(10000).withConfig(this.createConfig()).build();
 
         this.router.add(this.follower_2.getId(), this.follower_2);
-        var future = new CompletableFuture<Integer>();
+        var future = new CompletableFuture<CompletableFuture<Boolean>>();
         future.thenRunAsync(() -> {
             this.follower_2.setCommitIndex(this.leader.getCommitIndex());
         });
-        this.follower_2.commitIndexSyncRequests().subscribe(future::complete);
+        this.follower_2.syncRequests().subscribe(future::complete);
 
         this.follower_2.start();
 

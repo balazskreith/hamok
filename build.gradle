@@ -1,10 +1,12 @@
 plugins {
-    id 'java'
+    id 'java-library'
+    id 'signing'
     id 'maven-publish'
+    id('io.github.gradle-nexus.publish-plugin') version '1.1.0'
 }
 
 group 'io.github.balazskreith.hamok'
-version '1.0.0-beta'
+version '0.9.0-beta'
 
 
 apply plugin: 'maven-publish'
@@ -19,52 +21,82 @@ java {
     targetCompatibility = JavaVersion.toVersion("17")
 }
 
-//artifacts {
-//    archives javadocJar, sourcesJar
-//}
-//
-//signing {
-//    sign configurations.archives
-//}
-
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.1.5"
     implementation 'org.slf4j:slf4j-api:1.7.30'
-//    implementation group: 'io.netty', name: 'netty-all', version: '4.1.79.Final'
 
     testImplementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.11'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
-    testImplementation group: 'io.netty', name: 'netty-all', version: '4.1.79.Final'
 
     testImplementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.13.3'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
 }
 
-publishing {
+nexusPublishing {
     repositories {
-        maven {
-            name = "OSSRH"
-            url = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-            credentials {
-                username = System.getenv("MAVEN_USERNAME")
-                password = System.getenv("MAVEN_PASSWORD")
-            }
-        }
-//        maven {
-//            name = "GitHubPackages"
-//            url = "https://maven.pkg.github.com/balazskreith/hamok"
-//            credentials {
-//                username = System.getenv("GITHUB_ACTOR")
-//                password = System.getenv("GITHUB_TOKEN")
-//            }
-//        }
-    }
-    publications {
-        gpr(MavenPublication) {
-            from(components.java)
+        sonatype {
+            nexusUrl.set(uri("https://s01.oss.sonatype.org/service/local/"))
+            snapshotRepositoryUrl.set(uri("https://s01.oss.sonatype.org/content/repositories/snapshots/"))
         }
     }
 }
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from(components.java)
+            pom {
+                name = 'hamok-java-core'
+                description = 'Light and convinient way to create a distributed object storage'
+                url = 'https://github.com/balazskreith/hamok'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'balazskreith'
+                        name = 'Balazs Kreith'
+                    }
+                }
+                scm {
+                    url = 'https://github.com/balazskreith/hamok'
+                    connection = 'scm:git://github.com/balazskreith/hamok.git'
+                    developerConnection = 'scm:git://github.com/balazskreith/hamok.git'
+                }
+            }
+        }
+    }
+}
+
+//signing {
+//    sign publishing.publications.mavenJava
+//}
+
+signing {
+    def signingKey = findProperty("signingKey")
+    def signingPassword = findProperty("signingPassword")
+    useInMemoryPgpKeys(signingKey, signingPassword)
+    sign publishing.publications.mavenJava
+}
+
+ext.genOutputDir = file("$buildDir/generated-resources")
+
+task generateVersionTxt()  {
+    ext.outputFile = file("$genOutputDir/version.txt")
+    outputs.file(outputFile)
+    doLast {
+        outputFile.text = """GroupId: ${project.group}
+Name: ${project.name}
+Version: $version
+Build-time: ${java.time.LocalDateTime.now()}
+"""
+    }
+}
+
+sourceSets.main.output.dir genOutputDir, builtBy: generateVersionTxt
 
 test {
     useJUnitPlatform()

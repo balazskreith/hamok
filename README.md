@@ -6,11 +6,11 @@ Light and convenient library to create a distributed in-memory object storage gr
 
 Install
 
-Gradle:
 ```
 implementation group: 'io.github.balazskreith.hamok', name: 'hamok-java-core', version: '0.9.0-beta'
 ```
 
+Usage
 
 ```java
 // construct the storage grid on two servers

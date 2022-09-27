@@ -406,6 +406,10 @@ var storage = storageGrid.<Integer, String>createSeparatedStorage()
         .build();
 ```
 
+## Maven central
+
+https://central.sonatype.dev/publisher/io.github.balazskreith.hamok
+
 ## Contribution
 
 ## License

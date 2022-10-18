@@ -3,6 +3,15 @@ Hamok
 Light and convenient library to create a distributed in-memory object storage grid for java.
 
 ## Quick Start
+
+Install
+
+```
+implementation group: 'io.github.balazskreith.hamok', name: 'hamok-java-core', version: '0.9.0-beta'
+```
+
+Usage
+
 ```java
 // construct the storage grid on two servers
 var server_1 = StorageGrid.builder().build();
@@ -405,6 +414,10 @@ var storage = storageGrid.<Integer, String>createSeparatedStorage()
         .setMaxMessageValues(0)
         .build();
 ```
+
+## Maven central
+
+https://central.sonatype.dev/publisher/io.github.balazskreith.hamok
 
 ## Contribution
 

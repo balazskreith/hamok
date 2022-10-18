@@ -142,7 +142,6 @@ public interface Storage<K, V> extends AutoCloseable {
      * Evict entry belong to the given key
      *
      * @param key
-     * @return true if the key existed, false if it was not
      */
     default void evict(K key) {
         this.evictAll(Set.of(key));
@@ -154,7 +153,6 @@ public interface Storage<K, V> extends AutoCloseable {
      * The method must not return null value
      *
      * @param keys
-     * @return the set of keys deleted from the storage
      */
     void evictAll(Set<K> keys);
 

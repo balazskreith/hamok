@@ -7,7 +7,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.*;
 
-public class CompletablePromises<K, V> {
+/**
+ * Created for internal usage. Group together CompletableFutures.
+ * @param <K> the type of the key for the group
+ * @param <V> the type of the value resolved by the CompletableFutures
+ */
+class CompletablePromises<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(CompletablePromises.class);
 
     private final Map<K, CompletableFuture<Optional<V>>> requests = new ConcurrentHashMap<>();

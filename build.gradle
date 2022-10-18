@@ -6,7 +6,7 @@ plugins {
 }
 
 group 'io.github.balazskreith.hamok'
-version '0.9.1-SNAPSHOT'
+version '0.9.0-beta'
 
 
 apply plugin: 'maven-publish'
@@ -19,6 +19,8 @@ repositories {
 java {
     sourceCompatibility = JavaVersion.toVersion("17")
     targetCompatibility = JavaVersion.toVersion("17")
+    withJavadocJar()
+    withSourcesJar()
 }
 
 dependencies {
@@ -71,16 +73,16 @@ publishing {
     }
 }
 
-//signing {
-//    sign publishing.publications.mavenJava
-//}
-
 signing {
-    def signingKey = findProperty("signingKey")
-    def signingPassword = findProperty("signingPassword")
-    useInMemoryPgpKeys(signingKey, signingPassword)
     sign publishing.publications.mavenJava
 }
+
+//signing {
+//    def signingKey = findProperty("signingKey")
+//    def signingPassword = findProperty("signingPassword")
+//    useInMemoryPgpKeys(signingKey, signingPassword)
+//    sign publishing.publications.mavenJava
+//}
 
 ext.genOutputDir = file("$buildDir/generated-resources")
 

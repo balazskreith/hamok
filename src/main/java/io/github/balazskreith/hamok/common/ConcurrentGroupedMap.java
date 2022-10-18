@@ -5,7 +5,7 @@ import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-public class ConcurrentGroupedMap<G, K, V> {
+class ConcurrentGroupedMap<G, K, V> {
 
     private final RwLock rwLock = new RwLock();
     private final Map<G, Set<K>> groups = new HashMap<>();

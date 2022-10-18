@@ -24,6 +24,9 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 
+/**
+ * Creates an instance represents the Storage grid in the cluster
+ */
 public class StorageGrid implements Disposable {
     private static final Logger logger = LoggerFactory.getLogger(StorageGrid.class);
 
@@ -152,6 +155,7 @@ public class StorageGrid implements Disposable {
             logger.warn("{} ({}) received an unrecognized message {}", this.getLocalEndpointId(), this.context, message);
             return;
         }
+        this.metrics.incrementReceivedMessages();
         logger.debug("{} ({}) received message type {} ", this.getLocalEndpointId(), this.context, message.type);
 //        if (UuidTools.equals(this.getLocalEndpointId(), message.sourceId)) {
 //            logger.warn("Self Addressed message?", message);
@@ -238,13 +242,18 @@ public class StorageGrid implements Disposable {
                 .onStorageBuilt(storage -> {
                     var gridMember = SeparatedStorage.createGridMember(storage);
                     this.actors.put(gridMember.getIdentifier(), gridMember);
-                    storage.events().closingStorage()
-                            .firstElement().subscribe(this.actors::remove);
+                    this.metrics.incrementSeparatedStorage();
+                    storage.events().closingStorage().firstElement()
+                            .subscribe(storageId -> {
+                                this.actors.remove(storageId);
+                                this.metrics.decrementSeparatedStorage();
+                            });
                     logger.info("Created Separated Storage {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
                 })
                 ;
     }
 
+    @Deprecated
     public <K, V> PropagatedCollectionsBuilder<K, V, Set<V>> propagatedSets() {
         var storageGrid = this;
         return new PropagatedCollectionsBuilder<K, V, Set<V>>()
@@ -261,10 +270,26 @@ public class StorageGrid implements Disposable {
                 ;
     }
 
+    /**
+     * Creates a builder for a replicated storage.
+     *
+     * @param <K> the type of the key of the replicated storage
+     * @param <V> the type of the value of the replicated storage
+     * @return A builder for a storage
+     */
     public <K, V> ReplicatedStorageBuilder<K, V> replicatedStorage() {
         return replicatedStorage(null);
     }
 
+
+    /**
+     * Creates a builder for a replicated storage using facade a base storage
+     *
+     * @param baseStorage the storage used underlying to replicate
+     * @param <K> the type of the key of the replicated storage
+     * @param <V> the type of the value of the replicated storage
+     * @return A builder for a storage
+     */
     public <K, V> ReplicatedStorageBuilder<K, V> replicatedStorage(Storage<K, V> baseStorage) {
         var storageGrid = this;
         return new ReplicatedStorageBuilder<K, V>()
@@ -274,25 +299,46 @@ public class StorageGrid implements Disposable {
                 .onStorageBuilt(storage -> {
                     var gridMember = ReplicatedStorage.createGridMember(storage);
                     this.actors.put(gridMember.getIdentifier(), gridMember);
-                    storage.events().closingStorage()
-                            .firstElement().subscribe(this.actors::remove);
+                    this.metrics.incrementReplicatedStorage();
+                    storage.events().closingStorage().firstElement()
+                            .subscribe(storageId -> {
+                                this.actors.remove(storageId);
+                                this.metrics.decrementReplicatedStorage();
+                            });
                     logger.info("Created Replicatd Storage {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
                 })
                 ;
     }
 
+    /**
+     * Adds a remote endpoint to the grid.
+     *
+     * @param endpointId
+     */
     public void addRemoteEndpointId(UUID endpointId) {
         this.raccoon.addRemotePeerId(endpointId);
     }
 
+    /**
+     * Removes a remote endpoint from the grid
+     * @param endpointId
+     */
     public void removeRemoteEndpointId(UUID endpointId) {
         this.raccoon.removeRemotePeerId(endpointId);
     }
 
+    /**
+     * Access to the transport of the grid
+     * @return
+     */
     public StorageGridTransport transport() {
         return this.transport;
     }
 
+    /**
+     * Gets the id of the local endpoint
+     * @return the id of the local endpoint
+     */
     public UUID getLocalEndpointId() {
         return this.raccoon.getId();
     }
@@ -313,7 +359,7 @@ public class StorageGrid implements Disposable {
             this.dispatch(message);
             return;
         }
-
+        this.metrics.incrementSentMessages();
         this.sender.onNext(message);
     }
 
@@ -416,14 +462,26 @@ public class StorageGrid implements Disposable {
         this.errors.onNext(error);
     }
 
+    /**
+     * Observable event fired when a remote endpoint is joined to the grid
+     * @return Observable interface
+     */
     public Observable<UUID> joinedRemoteEndpoints() {
         return this.raccoon.joinedRemotePeerId();
     }
 
+    /**
+     * Observable event fired when a remote endpoint is left from the grid
+     * @return Observable event
+     */
     public Observable<UUID> detachedRemoteEndpoints() {
         return this.raccoon.detachedRemotePeerId();
     }
 
+    /**
+     * Observable event fired when errors occur in the grid
+     * @return Observable event
+     */
     public Observable<HamokError> errors() {
         return this.errors;
     }
@@ -444,6 +502,10 @@ public class StorageGrid implements Disposable {
         return this.executors;
     }
 
+    /**
+     * Gets the id of the leader in the grid
+     * @return
+     */
     public UUID getLeaderId() {
         return this.raccoon.getLeaderId();
     }

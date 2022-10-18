@@ -140,7 +140,7 @@ class LeaderState extends AbstractState {
             }
         }
         if (0 <= maxCommitIndex) {
-            logger.info("Committing index until {} at leader state", maxCommitIndex);
+            logger.debug("Committing index until {} at leader state", maxCommitIndex);
             var committedLogEntries = logs.commitUntil(maxCommitIndex);
             committedLogEntries.forEach(this::commitLogEntry);
         }

@@ -27,12 +27,4 @@ public final class Utils {
         }
         return null;
     }
-
-    public static int getSeqSum(int endSeq) {
-        if (endSeq % 2 == 0) {
-            return (endSeq >> 1) * (endSeq - 1) + endSeq;
-        } else {
-            return ((endSeq + 1) >> 1) * endSeq;
-        }
-    }
 }

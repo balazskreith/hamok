@@ -14,9 +14,10 @@ import static java.util.Objects.requireNonNull;
 /**
  * Collect a stream of items into a chunks and forward the collected chunks as list to a dedicated consumer.
  *
- * Handy if you have a very-large stream of items, where even the collection takes time and sill the memory,
- * so by using chunks you can process it much more safely and efficiently
- * @param <T>
+ * This class can be used to define a collector invokes a consumer every time a chunk is ready to be processed.
+ *
+ * @param <T> the type of the streamed item
+ * @param <R> the type of the collection the batch appears in
  */
 public abstract class BatchCollector<T, R extends Collection<T>> implements Collector<T, R, R> {
 

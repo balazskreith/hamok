@@ -25,6 +25,7 @@ class FollowerState extends AbstractState {
     private volatile int timedOutElection;
     private int extraWaitingTime = 0;
     private volatile boolean receivedEndpointNotification = false;
+    private volatile int shouldLogOnceFlags = 0;
 
     FollowerState(Raccoon base) {
         this(base, 0);
@@ -131,7 +132,10 @@ class FollowerState extends AbstractState {
                 return;
             }
             // that was a keep alive message
-            this.updateCommitIndex(requestChunk.leaderCommit());
+            if (!this.syncRequested) {
+                // try to update if a sync is not in progress
+                this.updateCommitIndex(requestChunk.leaderCommit());
+            }
             var response = requestChunk.createResponse(true, logs().getNextIndex(), true);
             this.sendAppendEntriesResponse(response);
             return;
@@ -154,7 +158,11 @@ class FollowerState extends AbstractState {
 
         logger.trace("Received RaftAppendEntriesRequest {}", request);
         if (this.syncRequested) {
-            logger.info("Commit sync is being executed at the moment");
+            if ((this.shouldLogOnceFlags & 1) == 0) {
+                logger.warn("Commit sync is being executed at the moment");
+                this.shouldLogOnceFlags += 1;
+            }
+
             // until we do not sync we cannot process and go forward with our index
             var response = requestChunk.createResponse(
                     true,
@@ -163,7 +171,10 @@ class FollowerState extends AbstractState {
             );
             this.sendAppendEntriesResponse(response);
             return;
+        } else if ((this.shouldLogOnceFlags & 1) == 1) {
+            this.shouldLogOnceFlags -= 1;
         }
+
         if (logs.getNextIndex() < request.leaderNextIndex() - request.entries().size()) {
             logger.warn("The next index is {}, and the leader index is: {}, the provided entries are: {}. It is insufficient to close the gap for this node. Execute sync request is necessary from the leader to request and the timeout of the raft logs should be large enough to close the gap after the sync.",
                     logs.getNextIndex(),

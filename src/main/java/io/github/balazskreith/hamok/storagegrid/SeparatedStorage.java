@@ -82,7 +82,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                         .filter(entry -> oldEntries.containsKey(entry.getKey()))
                         .collect(Collectors.toMap(
                                 Map.Entry::getKey,
-                                Map.Entry::getValue
+                                Map.Entry::getValue,
+                                (v1, v2) -> {
+                                    logger.error("Duplicated item tried to be merged: {}, {}", v1, v2);
+                                    return v1;
+                                }
                         ));
                 if (0 < updatedEntries.size()) {
                     this.storage.setAll(updatedEntries);
@@ -178,7 +182,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        Map.Entry::getValue
+                        Map.Entry::getValue,
+                        (v1, v2) -> {
+                            logger.error("Duplicated item tried to be merged: {}, {}", v1, v2);
+                            return v1;
+                        }
                 ));
     }
 
@@ -203,7 +211,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
             var updatedEntries = updatedLocalEntries.entrySet().stream()
                     .collect(Collectors.toMap(
                             entry -> entry.getKey(),
-                            entry -> m.get(entry.getKey())
+                            entry -> m.get(entry.getKey()),
+                            (v1, v2) -> {
+                                logger.error("Duplicated item tried to be merged: {}, {}", v1, v2);
+                                return v1;
+                            }
                     ));
             this.storage.setAll(updatedEntries);
             updatedLocalEntries.keySet().stream().forEach(missingKeys::remove);
@@ -221,7 +233,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        Map.Entry::getValue
+                        Map.Entry::getValue,
+                        (v1, v2) -> {
+                            logger.error("Duplicated item tried to be merged: {}, {}", v1, v2);
+                            return v1;
+                        }
                 ));
         if (updatedRemoteEntries != null && 0 < updatedRemoteEntries.size()) {
             updatedRemoteEntries.keySet().stream().forEach(missingKeys::remove);
@@ -254,7 +270,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        Map.Entry::getValue
+                        Map.Entry::getValue,
+                        (v1, v2) -> {
+                            logger.error("Duplicated item tried to be merged: {}, {}", v1, v2);
+                            return v1;
+                        }
                 ));
         if (0 < existingRemoteEntries.size()) {
             existingRemoteEntries.keySet().stream().forEach(missingKeys::remove);
@@ -381,19 +401,15 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
     }
 
     private boolean executeSync() {
-        var remoteKeys = this.endpoint.requestGetKeys();
         var storageSizeBefore = this.storage.size();
-        this.storage.evictAll(remoteKeys);
-        var storageSizeAfter = this.storage.size();
-
+        this.storage.clear();
         var storedBackupBefore = this.backupStorage.metrics().storedEntries();
-        this.backupStorage.evict(remoteKeys);
-        var storedBackupAfter = this.backupStorage.metrics().storedEntries();
+        this.backupStorage.clear();
 
         logger.info("Execute sync on {}. Evicted storage entries: {}, Evicted backup entries: {}",
             this.storage.getId(),
-                storageSizeBefore - storageSizeAfter,
-                storedBackupBefore - storedBackupAfter
+                storageSizeBefore,
+                storedBackupBefore
         );
         return true;
     }

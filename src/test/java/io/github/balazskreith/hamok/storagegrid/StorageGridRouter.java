@@ -74,6 +74,14 @@ class StorageGridRouter {
         });
     }
 
+    public boolean isDisabled(UUID id) {
+        return this.rwLock.supplyInReadLock(() -> {
+            var transport = this.transports.get(id);
+            if (transport == null) return false;
+            return transport.enabled == false;
+        });
+    }
+
     private void receive(Message message) {
         if (!this.enabled) {
             return;

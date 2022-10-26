@@ -4,123 +4,130 @@ import org.junit.jupiter.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Function;
 
-@DisplayName("Replicated Storage Insert operation scenario.")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class ReplicatedStorageSyncTest {
 
     private static final Logger logger = LoggerFactory.getLogger(ReplicatedStorageSyncTest.class);
 
-//    private static final int EXPIRATION_TIME_IN_MS = 5000;
-    private static final int EXPIRATION_TIME_IN_MS = 5000;
-    private static final String STORAGE_ID = "Stockpiles";
+    private final int maxRetentionTimeInMs = 5000;
+    private ReplicatedStoragesClusterEnv environment;
 
-    private StorageGrid euWest;
-    private StorageGrid usEast;
-    private StorageGrid asEast;
-    private ReplicatedStorage<Integer, Integer> bcnStockpile;
-    private ReplicatedStorage<Integer, Integer> nyStockpile;
-    private ReplicatedStorage<Integer, Integer> hkStockpile;
-    private StorageGridRouter router = new StorageGridRouter();
+    @BeforeAll
+    void init() throws ExecutionException, InterruptedException, TimeoutException {
+        environment = new ReplicatedStoragesClusterEnv().setMaxRetention(maxRetentionTimeInMs).create();
+        environment.await(15000);
+        environment.awaitLeader(30000);
+    }
+
+    @AfterAll
+    void teardown() {
+        environment.destroy();
+    }
+
 
     @Test
     @Order(1)
-    @DisplayName("Setup")
-    void test_1() throws InterruptedException, ExecutionException, TimeoutException {
-        this.euWest = StorageGrid.builder()
-                .withContext("Eu West")
-                .withRaftMaxLogRetentionTimeInMs(EXPIRATION_TIME_IN_MS)
-                .build();
-        this.usEast = StorageGrid.builder()
-                .withContext("US east")
-                .withRaftMaxLogRetentionTimeInMs(EXPIRATION_TIME_IN_MS)
-                .build();
-        Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
-        Function<byte[], Integer> intDec = b -> ByteBuffer.wrap(b).getInt();
+    @DisplayName("Setup values for storages")
+    void test_1() {
+        var euStorage = environment.getEuStorage();
+        var usStorage = environment.getUsStorage();
+        var asStorage = environment.getAsStorage();
 
-        bcnStockpile = euWest.<Integer, Integer>replicatedStorage()
-                .setStorageId(STORAGE_ID)
-                .setKeyCodec(intEnc, intDec)
-                .setValueCodec(intEnc, intDec)
-                .build();
+        euStorage.set("one", 1);
+        usStorage.set("two", 2);
+        asStorage.set("three", 3);
+        environment.awaitUntilCommitsSynced();
 
-        nyStockpile = usEast.<Integer, Integer>replicatedStorage()
-                .setStorageId(STORAGE_ID)
-                .setKeyCodec(intEnc, intDec)
-                .setValueCodec(intEnc, intDec)
-                .build();
-
-        var euWestIsReady = new CompletableFuture<UUID>();
-        var usEastIsReady = new CompletableFuture<UUID>();
-
-        euWest.changedLeaderId().filter(Optional::isPresent).map(Optional::get).subscribe(euWestIsReady::complete);
-        usEast.changedLeaderId().filter(Optional::isPresent).map(Optional::get).subscribe(usEastIsReady::complete);
-
-        this.router.add(euWest.getLocalEndpointId(), euWest.transport());
-        this.router.add(usEast.getLocalEndpointId(), usEast.transport());
-
-        CompletableFuture.allOf(euWestIsReady, usEastIsReady).get(15000, TimeUnit.MILLISECONDS);
-        Assertions.assertEquals(euWestIsReady.get(), usEastIsReady.get());
+        Assertions.assertEquals(1, usStorage.get("one"));
+        Assertions.assertEquals(1, asStorage.get("one"));
+        Assertions.assertEquals(2, euStorage.get("two"));
+        Assertions.assertEquals(2, asStorage.get("two"));
+        Assertions.assertEquals(3, euStorage.get("three"));
+        Assertions.assertEquals(3, usStorage.get("three"));
     }
 
     @Test
     @Order(2)
-    @DisplayName("Fill the replicated storage and keep it in this stage more than the rat expiration log time")
+    @DisplayName("Detach and attach euGrid and add new items so when it comes back it needs to sync")
     void test_2() throws ExecutionException, InterruptedException, TimeoutException {
-        for (int i = 0; i < 10; ++i) {
-            var entries = new HashMap<Integer, Integer>();
-            for (int j = 0; j < 1000; ++j) {
-                entries.put(i * 1000 + j, getRandomNumber());
-            }
-            this.nyStockpile.insertAll(entries);
-            Thread.sleep(1000);
-        }
+        var euStorage = environment.getEuStorage();
+        var usStorage = environment.getUsStorage();
+        var asStorage = environment.getAsStorage();
+
+        this.environment.detachEuWest(30000);
+        this.environment.awaitLeader(30000);
+
+        Thread.sleep(2 * this.maxRetentionTimeInMs);
+        usStorage.set("four", 4);
+        asStorage.set("five", 5);
+        Thread.sleep(2 * this.maxRetentionTimeInMs);
+        usStorage.set("six", 6);
+        asStorage.set("seven", 7);
+
+        environment.joinEuWest(30000);
+        environment.awaitLeader(30000);
+        environment.awaitUntilCommitsSynced();
+
+        Assertions.assertEquals(7, usStorage.localSize());
+        Assertions.assertEquals(7, euStorage.localSize());
+        Assertions.assertEquals(7, asStorage.localSize());
     }
 
     @Test
     @Order(3)
-    @DisplayName("Add new participant")
+    @DisplayName("Detach and attach usEast and add new items so when it comes back it needs to sync")
     void test_3() throws ExecutionException, InterruptedException, TimeoutException {
-        this.asEast = StorageGrid.builder()
-                .withContext("AS east")
-                .withRaftMaxLogRetentionTimeInMs(EXPIRATION_TIME_IN_MS)
-                .build();
+        var euStorage = environment.getEuStorage();
+        var usStorage = environment.getUsStorage();
+        var asStorage = environment.getAsStorage();
 
-        Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
-        Function<byte[], Integer> intDec = b -> ByteBuffer.wrap(b).getInt();
-        hkStockpile = asEast.<Integer, Integer>replicatedStorage()
-                .setStorageId(STORAGE_ID)
-                .setKeyCodec(intEnc, intDec)
-                .setValueCodec(intEnc, intDec)
-                .build();
+        this.environment.detachUsEast(30000);
+        this.environment.awaitLeader(30000);
 
-        var asEastIsReady = new CompletableFuture<>();
-        asEast.changedLeaderId().filter(Optional::isPresent).map(Optional::get).subscribe(asEastIsReady::complete);
+        Thread.sleep(2 * this.maxRetentionTimeInMs);
+        euStorage.set("eight", 8);
+        asStorage.set("nine", 9);
+        Thread.sleep(2 * this.maxRetentionTimeInMs);
+        euStorage.set("ten", 10);
+        asStorage.set("eleven", 11);
 
-        this.router.add(asEast.getLocalEndpointId(), asEast.transport());
-        asEastIsReady.get();
+        environment.joinUsEast(30000);
+        environment.awaitLeader(30000);
+        environment.awaitUntilCommitsSynced();
+
+        Assertions.assertEquals(11, usStorage.localSize());
+        Assertions.assertEquals(11, euStorage.localSize());
+        Assertions.assertEquals(11, asStorage.localSize());
     }
 
     @Test
-    @Order(3)
-    @DisplayName("Add new participant")
+    @Order(4)
+    @DisplayName("Detach and attach asEast and add new items so when it comes back it needs to sync")
     void test_4() throws ExecutionException, InterruptedException, TimeoutException {
-        Thread.sleep(30000);
+        var euStorage = environment.getEuStorage();
+        var usStorage = environment.getUsStorage();
+        var asStorage = environment.getAsStorage();
+
+        this.environment.detachAsEast(30000);
+        this.environment.awaitLeader(30000);
+
+        Thread.sleep(2 * this.maxRetentionTimeInMs);
+        usStorage.set("twelve", 12);
+        euStorage.set("thirteen", 13);
+        Thread.sleep(2 * this.maxRetentionTimeInMs);
+        usStorage.set("fourteen", 14);
+        euStorage.set("fifteen", 15);
+
+        environment.joinAsEast(30000);
+        environment.awaitLeader(30000);
+        environment.awaitUntilCommitsSynced();
+
+        Assertions.assertEquals(15, usStorage.localSize());
+        Assertions.assertEquals(15, euStorage.localSize());
+        Assertions.assertEquals(15, asStorage.localSize());
     }
-
-    private static Integer getRandomNumber() {
-        return (int) (Math.random() * (Integer.MAX_VALUE - 1));
-    }
-
-
 }

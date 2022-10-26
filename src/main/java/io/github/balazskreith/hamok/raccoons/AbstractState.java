@@ -112,10 +112,6 @@ abstract class AbstractState implements Runnable {
         return this.base.requestStorageSync();
     }
 
-    protected void inactivatedLocalPeerId() {
-        this.base.signalInactivatedLocalPeer();
-    }
-
     protected void sendEndpointStateNotification(Set<UUID> remotePeerIds) {
         if (remotePeerIds == null || remotePeerIds.size() < 1) {
             return;

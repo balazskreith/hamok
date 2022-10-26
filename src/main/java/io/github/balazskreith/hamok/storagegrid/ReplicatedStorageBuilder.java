@@ -2,15 +2,17 @@ package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Depot;
+import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.memorystorages.ConcurrentMemoryStorage;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
 import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
+import io.reactivex.rxjava3.core.Observable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
+import java.util.function.BinaryOperator;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -18,7 +20,6 @@ import java.util.function.Supplier;
 public class ReplicatedStorageBuilder<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(ReplicatedStorageBuilder.class);
 
-    private final StorageEndpointBuilder<K, V> storageEndpointBuilder = new StorageEndpointBuilder<>();
     private Consumer<StorageEndpoint<K, V>> storageEndpointBuiltListener = endpoint -> {};
     private Consumer<ReplicatedStorage<K, V>> storageBuiltListener = storage -> {};
     private StorageGrid grid;
@@ -27,6 +28,7 @@ public class ReplicatedStorageBuilder<K, V> {
     private Function<byte[], K> keyDecoder;
     private Function<V, byte[]> valueEncoder;
     private Function<byte[], V> valueDecoder;
+    private BinaryOperator<V> mergeOp;
 
     private Storage<K, V> actualStorage;
     private String storageId = null;
@@ -34,6 +36,7 @@ public class ReplicatedStorageBuilder<K, V> {
     private int maxCollectedActualStorageTimeInMs = 100;
     private int maxMessageKeys = 0;
     private int maxMessageValues = 0;
+    private Consumer<StorageInGrid> storageInGridListener = null;
 
     ReplicatedStorageBuilder() {
 
@@ -41,7 +44,11 @@ public class ReplicatedStorageBuilder<K, V> {
 
     ReplicatedStorageBuilder<K, V> setStorageGrid(StorageGrid storageGrid) {
         this.grid = storageGrid;
-        this.storageEndpointBuilder.setStorageGrid(storageGrid);
+        return this;
+    }
+
+    ReplicatedStorageBuilder<K, V> onStorageInGridReady(Consumer<StorageInGrid> listener) {
+        this.storageInGridListener = listener;
         return this;
     }
 
@@ -57,13 +64,11 @@ public class ReplicatedStorageBuilder<K, V> {
 
     public ReplicatedStorageBuilder<K, V> setMaxMessageKeys(int value) {
         this.maxMessageKeys = value;
-        this.storageEndpointBuilder.setMaxMessageKeys(value);
         return this;
     }
 
     public ReplicatedStorageBuilder<K, V> setMaxMessageValues(int value) {
         this.maxMessageValues = value;
-        this.storageEndpointBuilder.setMaxMessageValues(value);
         return this;
     }
 
@@ -100,17 +105,32 @@ public class ReplicatedStorageBuilder<K, V> {
     }
 
 
-    ReplicatedStorageBuilder<K, V> setMapDepotProvider(Supplier<Depot<Map<K, V>>> depotProvider) {
-        this.storageEndpointBuilder.setMapDepotProvider(depotProvider);
+    // make it not public yet, as storage also have a binary operator to merge the results
+    ReplicatedStorageBuilder<K, V> setMergeOperator(BinaryOperator<V> mergeOperator) {
+        this.mergeOp = mergeOperator;
         return this;
     }
 
+    private Function<Message, Iterator<Message>> createResponseMessageChunker() {
+        if (this.maxMessageKeys < 1 && this.maxMessageValues < 1) {
+            return ResponseMessageChunker.createSelfIteratorProvider();
+        }
+        return new ResponseMessageChunker(this.maxMessageKeys, this.maxMessageValues);
+    }
+
+    private Supplier<Depot<Map<K, V>>> createDepotProvider() {
+        if (this.mergeOp == null) {
+            return MapUtils::makeMapAssignerDepot;
+        }
+        return () -> MapUtils.makeMergedMapDepot(mergeOp);
+    }
 
     public ReplicatedStorage<K, V> build() {
         Objects.requireNonNull(this.valueEncoder, "Codec for values must be defined");
         Objects.requireNonNull(this.valueDecoder, "Codec for values must be defined");
         Objects.requireNonNull(this.keyEncoder, "Codec for keys must be defined");
         Objects.requireNonNull(this.valueDecoder, "Codec for keys must be defined");
+        Objects.requireNonNull(this.storageInGridListener, "Separated Storage builder must have a callback for grid participation");
 
         if (this.actualStorage == null) {
             Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
@@ -136,34 +156,109 @@ public class ReplicatedStorageBuilder<K, V> {
                 this.valueEncoder,
                 this.valueDecoder
         );
-        var localEndpointSet = Set.of(this.grid.getLocalEndpointId());
-        var storageEndpoint = this.storageEndpointBuilder
-                .setStorageId(this.storageId)
-                .setMessageSerDe(actualMessageSerDe)
-                .setDefaultResolvingEndpointIdsSupplier(() -> localEndpointSet)
-                .setProtocol(ReplicatedStorage.PROTOCOL_NAME)
-                .build();
-        storageEndpoint.requestsDispatcher().subscribe(message -> {
-            var type = MessageType.valueOf(message.type);
-            switch (type) {
-                case GET_ENTRIES_REQUEST,
-                        GET_SIZE_REQUEST,
-                        GET_KEYS_REQUEST -> {
-                    this.grid.send(message);
+        var localEndpointSet = Set.of(this.grid.endpoints().getLocalEndpointId());
+        var responseMessageChunker = this.createResponseMessageChunker();
+        var depotProvider = this.createDepotProvider();
+
+        var storageEndpoint = new StorageEndpoint<K, V>(
+                this.grid,
+                actualMessageSerDe,
+                responseMessageChunker,
+                depotProvider,
+                ReplicatedStorage.PROTOCOL_NAME
+        ) {
+            @Override
+            protected String getStorageId() {
+                return actualStorage.getId();
+            }
+
+            @Override
+            protected Set<UUID> defaultResolvingEndpointIds(MessageType messageType) {
+                if (messageType == null) {
+                    return grid.endpoints().getRemoteEndpointIds();
                 }
-                default -> {
-                    this.grid.submit(message);
+                switch (messageType) {
+                    case CLEAR_ENTRIES_REQUEST:
+                    case INSERT_ENTRIES_REQUEST:
+                    case DELETE_ENTRIES_REQUEST:
+                    case UPDATE_ENTRIES_REQUEST:
+                        // if mutating request should be resolved by the endpoint itself
+                        // as it goes through Raccoons replicate it to everywhere
+                        return localEndpointSet;
+                    default:
+                        return grid.endpoints().getRemoteEndpointIds();
                 }
             }
-        });
-        this.storageEndpointBuiltListener.accept(storageEndpoint);
 
+            @Override
+            protected void sendNotification(Message message) {
+                grid.send(message);
+            }
+
+            @Override
+            protected void sendRequest(Message message) {
+                var messageType = MessageType.valueOfOrNull(message.type);
+                if (messageType == null) {
+                    grid.send(message);
+                    return;
+                }
+                switch (messageType) {
+                    case CLEAR_ENTRIES_REQUEST,
+                        INSERT_ENTRIES_REQUEST,
+                        DELETE_ENTRIES_REQUEST,
+                        UPDATE_ENTRIES_REQUEST -> {
+                            grid.submit(message);
+                        }
+                    default -> {
+                        grid.send(message);
+                    }
+                }
+            }
+
+            @Override
+            protected void sendResponse(Message message) {
+                grid.send(message);
+            }
+        };
         var result = new ReplicatedStorage<K, V>(
                 this.actualStorage,
                 storageEndpoint,
                 config
         );
         this.storageBuiltListener.accept(result);
+        var storageInGrid = new StorageInGrid(){
+
+            @Override
+            public String getIdentifier() {
+                return result.getId();
+            }
+
+            @Override
+            public void accept(Message message) {
+                storageEndpoint.receive(message);
+            }
+
+            @Override
+            public void close() {
+                storageEndpoint.close();
+                try {
+                    result.close();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public StorageSyncResult executeSync() {
+                return result.executeSync();
+            }
+
+            @Override
+            public Observable<String> observableClosed() {
+                return result.events().closingStorage();
+            }
+        };
+        storageInGridListener.accept(storageInGrid);
         return result;
 
     }

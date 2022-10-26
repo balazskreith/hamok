@@ -18,7 +18,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.time.Instant;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -46,7 +45,6 @@ public class Raccoon implements Disposable, Closeable {
 
     public Subject<LogEntry> committedEntries = PublishSubject.create();
     private final Subject<CompletableFuture<Boolean>> requestStorageSync = PublishSubject.create();
-    private final Subject<Long> inactivatedLocalPeer = PublishSubject.create();
     private final Subject<RaftState> changedState = PublishSubject.create();
     private final RxAtomicReference<UUID> actualLeaderId = new RxAtomicReference<>(null, UuidTools::equals);
     private final Scheduler scheduler;
@@ -191,8 +189,6 @@ public class Raccoon implements Disposable, Closeable {
 
     public Observable<UUID> detachedRemotePeerId() { return this.remotePeers.detachedRemoteEndpointIds().observeOn(Schedulers.computation()); }
 
-    public Observable<Long> inactivatedLocalPeer() {return this.inactivatedLocalPeer.observeOn(Schedulers.computation()); }
-
     /**
      * Returns the index of the entry submitted to the leader
      * or null if the current state is not the leader
@@ -250,6 +246,14 @@ public class Raccoon implements Disposable, Closeable {
         return this.logs.getCommitIndex();
     }
 
+    public int getNumberOfCommits() {
+        return this.logs.size();
+    }
+
+    public int getLastApplied() {
+        return this.logs.getLastApplied();
+    }
+
     public Set<UUID> getRemoteEndpointIds() {
         return this.remotePeers.getActiveRemotePeerIds();
     }
@@ -260,10 +264,6 @@ public class Raccoon implements Disposable, Closeable {
 
     public void removeRemotePeerId(UUID peerId) {
         this.remotePeers.detach(peerId);
-    }
-
-    void signalInactivatedLocalPeer() {
-        this.inactivatedLocalPeer.onNext(Instant.now().toEpochMilli());
     }
 
     void setActualLeaderId(UUID actualLeaderId) {
@@ -299,4 +299,6 @@ public class Raccoon implements Disposable, Closeable {
         }
         successor.start();
     }
+
+
 }

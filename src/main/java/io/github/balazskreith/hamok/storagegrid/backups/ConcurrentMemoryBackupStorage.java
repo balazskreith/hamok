@@ -43,7 +43,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
             }
             remoteEndpointStoredEntries.putAll(notification.entries());
         }).onDeleteEntriesNotification(notification -> {
-            this.evict(notification.keys());
+            this.evict(notification.sourceEndpointId(), notification.keys());
         }).onRemoteEndpointJoined(remoteEndpointId -> {
             var oldList = this.remoteEndpointIdsListHolder.get();
             var newList = Stream.concat(oldList.stream(), List.of(remoteEndpointId).stream())
@@ -66,7 +66,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         });
         var remoteEndpointsList = this.endpoint.getRemoteEndpointIds().stream().collect(Collectors.toList());
         this.setRemoteEndpoints(remoteEndpointsList);
-        logger.debug("Backup storage for {} is created", this.endpoint.getStorageId());
+//        logger.debug("Backup storage for {} is created", this.endpoint.getStorageId());
     }
 
 
@@ -161,12 +161,16 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
         });
     }
 
+
     @Override
-    public void evict(Set<K> keys) {
+    public void evict(UUID sourceId, Set<K> keys) {
         if (keys == null) {
             return;
         }
         this.storedEntries.forEach((endpointId, storedEntries) -> {
+            if (sourceId != null && UuidTools.notEquals(endpointId, sourceId)) {
+                return;
+            }
             keys.stream().forEach(storedEntries::remove);
         });
     }
@@ -189,7 +193,7 @@ public class ConcurrentMemoryBackupStorage<K, V> implements BackupStorage<K, V> 
     @Override
     public BackupStats metrics() {
         return  new BackupStats(
-                this.endpoint.getStorageId(),
+                "Backup",
                 this.storedEntries.size(),
                 this.savedEntries.size()
         );

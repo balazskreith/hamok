@@ -49,6 +49,8 @@ public class Message {
     public Boolean success;
     public Boolean executeSync;
     public UUID raftLeaderId;
+    public Integer raftNumberOfLogs;
+    public Integer raftLastAppliedIndex;
     public Integer raftCommitIndex;
     public Integer raftLeaderNextIndex;
     public Integer raftPrevLogTerm;
@@ -77,6 +79,8 @@ public class Message {
         result.success = this.success;
         result.executeSync = this.executeSync;
         result.raftLeaderId = this.raftLeaderId;
+        result.raftNumberOfLogs = this.raftNumberOfLogs;
+        result.raftLastAppliedIndex = this.raftLastAppliedIndex;
         result.raftCommitIndex = this.raftCommitIndex;
         result.raftLeaderNextIndex = this.raftLeaderNextIndex;
         result.raftPrevLogTerm = this.raftPrevLogTerm;
@@ -106,6 +110,8 @@ public class Message {
         this.executeSync = source.executeSync != null ? source.executeSync : this.executeSync;
         this.raftLeaderId = source.raftLeaderId != null ? source.raftLeaderId : this.raftLeaderId;
         this.raftCommitIndex = source.raftCommitIndex != null ? source.raftCommitIndex : this.raftCommitIndex;
+        this.raftNumberOfLogs = source.raftNumberOfLogs != null ? source.raftNumberOfLogs : this.raftNumberOfLogs;
+        this.raftLastAppliedIndex = source.raftLastAppliedIndex != null ? source.raftLastAppliedIndex : this.raftLastAppliedIndex;
         this.raftLeaderNextIndex = source.raftLeaderNextIndex != null ? source.raftLeaderNextIndex : this.raftLeaderNextIndex;
         this.raftPrevLogTerm = source.raftPrevLogTerm != null ? source.raftPrevLogTerm : this.raftPrevLogTerm;
         this.raftPrevLogIndex = source.raftPrevLogIndex != null ? source.raftPrevLogIndex : this.raftPrevLogIndex;
@@ -143,6 +149,8 @@ public class Message {
                 "%s success: %s\n" +
                 "%s executeSync: %s\n" +
                 "%s raftLeaderId: %s\n" +
+                "%s raftNumberOfLogs: %s\n" +
+                "%s raftLastAppliedIndex: %s\n" +
                 "%s raftCommitIndex: %d\n" +
                 "%s raftLeaderNextIndex: %d\n" +
                 "%s raftPrevLogTerm: %d\n" +
@@ -169,6 +177,8 @@ public class Message {
                 innerTab, booleanToString.apply(this.success),
                 innerTab, booleanToString.apply(this.executeSync),
                 innerTab, this.raftLeaderId,
+                innerTab, this.raftNumberOfLogs,
+                innerTab, this.raftLastAppliedIndex,
                 innerTab, this.raftCommitIndex,
                 innerTab, this.raftLeaderNextIndex,
                 innerTab, this.raftPrevLogTerm,

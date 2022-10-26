@@ -5,10 +5,7 @@ import io.github.balazskreith.hamok.raccoons.events.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -221,24 +218,13 @@ public class GridOpSerDe {
     }
 
     public StorageSyncResponse deserializeStorageSyncResponse(Message message) {
-        var storageUpdateNotifications = new HashMap<String, Message>();
-        if (message.keys != null && message.embeddedMessages != null) {
-            var length = Math.min(message.keys.size(), message.embeddedMessages.size());
-            for (int i = 0; i < length; ++i) {
-                var bytes = message.keys.get(i);
-                var storageId = bytes != null ? new String(bytes, StandardCharsets.UTF_8) : "";
-                storageUpdateNotifications.put(storageId, message.embeddedMessages.get(i));
-            }
-        }
         return new StorageSyncResponse(
                 message.requestId,
-                storageUpdateNotifications,
-                message.raftCommitIndex,
                 message.destinationId,
-                message.success,
                 message.raftLeaderId,
-                message.sequence,
-                message.lastMessage
+                message.raftNumberOfLogs,
+                message.raftLastAppliedIndex,
+                message.raftCommitIndex
         );
     }
 
@@ -248,23 +234,9 @@ public class GridOpSerDe {
         result.requestId = response.requestId();
         result.destinationId = response.destinationId();
         result.raftLeaderId = response.leaderId();
+        result.raftNumberOfLogs = response.numberOfLogs();
+        result.raftLastAppliedIndex = response.lastApplied();
         result.raftCommitIndex = response.commitIndex();
-        result.sequence = response.sequence();
-        result.lastMessage = response.lastMessage();
-        result.success = response.success();
-
-        if (response.storageUpdateNotifications() != null) {
-            result.keys = new LinkedList<>();
-            result.embeddedMessages = new LinkedList<>();
-            for (var entry : response.storageUpdateNotifications().entrySet()) {
-                var storageId = entry.getKey();
-                result.keys.add(storageId.getBytes(StandardCharsets.UTF_8));
-                result.embeddedMessages.add(entry.getValue());
-            }
-        } else {
-            result.keys = Collections.emptyList();
-            result.embeddedMessages = Collections.emptyList();
-        }
         return result;
     }
 }

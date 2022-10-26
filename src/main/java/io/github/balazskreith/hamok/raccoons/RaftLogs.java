@@ -5,6 +5,7 @@ import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
 
 class RaftLogs {
@@ -31,9 +32,11 @@ class RaftLogs {
 
     private final RwLock rwLock = new RwLock();
     private final Map<Integer, LogEntry> entries;
+    private final int expirationTimeInMs;
 
-    RaftLogs(Map<Integer, LogEntry> entries) {
+    RaftLogs(Map<Integer, LogEntry> entries, int expirationTimeInMs) {
         this.entries = entries;
+        this.expirationTimeInMs = expirationTimeInMs;
         this.commitIndex = -1;
         this.lastApplied = 0;
         this.nextIndex = 0;
@@ -68,19 +71,32 @@ class RaftLogs {
         return this.rwLock.supplyInReadLock(this.entries::size);
     }
 
-    /**
-     * Increase the lastApplied index and removes the entry from the logs
-     */
-    public void apply() {
-        this.rwLock.runInWriteLock(() -> {
-            this.entries.remove(this.lastApplied);
-            ++this.lastApplied;
+    private void expire() {
+        if (this.expirationTimeInMs < 1) {
+            // infinite
+            return;
+        }
+        int expiredLogIndex = this.rwLock.supplyInReadLock(() -> {
+            var thresholdInMs = Instant.now().toEpochMilli() - this.expirationTimeInMs;
+            int result = -1;
+            for (int index = this.lastApplied; index < this.commitIndex; ++index) {
+                var logEntry = this.entries.get(index);
+                if (logEntry == null) {
+                    // already purged?
+                    logger.info("LastApplied is set to {}, because for index {} logEntry does not exists", index + 1, index);
+                    this.lastApplied = index + 1;
+                    continue;
+                }
+                if (thresholdInMs <= logEntry.timestamp()) {
+                    return result;
+                }
+                result = index;
+            }
+            return result;
         });
-    }
-
-    void expire(int expiredLogIndex) {
-        // special case for map expiring.
-        // we move the lastApplied up until the point of expired index, because we do not want gaps
+        if (expiredLogIndex < 0) {
+            return;
+        }
         this.rwLock.runInWriteLock(() -> {
             if (this.nextIndex <= expiredLogIndex || expiredLogIndex < this.lastApplied) {
                 return;
@@ -127,6 +143,9 @@ class RaftLogs {
                 committedEntries.add(logEntry);
             }
         });
+        if (0 < committedEntries.size()) {
+            this.expire();
+        }
         return committedEntries;
     }
 
@@ -153,8 +172,9 @@ class RaftLogs {
 //    }
 
     public Integer submit(int term, Message entry) {
+        var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
-            var logEntry = new LogEntry(this.nextIndex, term, entry);
+            var logEntry = new LogEntry(this.nextIndex, term, entry, now);
 //            logger.info("Adding entry with index: {}", logEntry);
             this.entries.put(logEntry.index(), logEntry);
             ++this.nextIndex;
@@ -176,13 +196,14 @@ class RaftLogs {
      * @return
      */
     public LogEntry compareAndOverride(int index, int expectedTerm, Message entry) throws IllegalAccessError{
+        var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex <= index) {
                 return null;
             }
             var oldLogEntry = this.entries.get(index);
             if (oldLogEntry == null) {
-                var newLogEntry = new LogEntry(index, expectedTerm, entry);
+                var newLogEntry = new LogEntry(index, expectedTerm, entry, now);
                 this.entries.put(newLogEntry.index(), newLogEntry);
                 return null;
             }
@@ -190,7 +211,7 @@ class RaftLogs {
                 // theoretically identical
                 return null;
             }
-            var newLogEntry = new LogEntry(oldLogEntry.index(), expectedTerm, entry);
+            var newLogEntry = new LogEntry(oldLogEntry.index(), expectedTerm, entry, now);
             this.entries.put(newLogEntry.index(), newLogEntry);
             return oldLogEntry;
         });
@@ -204,11 +225,12 @@ class RaftLogs {
      * @return True if the expected index is the next index and the log is added, false otherwise
      */
     public boolean compareAndAdd(int expectedNextIndex, int term, Message entry) {
+        var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex != expectedNextIndex) {
                 return false;
             }
-            var logEntry = new LogEntry(this.nextIndex, term, entry);
+            var logEntry = new LogEntry(this.nextIndex, term, entry, now);
             this.entries.put(logEntry.index(), logEntry);
             ++this.nextIndex;
             return true;
@@ -290,5 +312,6 @@ class RaftLogs {
             this.nextIndex = newCommitIndex + 1;
             this.lastApplied = newCommitIndex;
         });
+        logger.info("Logs are reset. new values: commitIndex: {}, nextIndex: {}, lastApplied: {}", newCommitIndex, newCommitIndex + 1, newCommitIndex);
     }
 }

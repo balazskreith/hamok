@@ -34,10 +34,10 @@ public interface BackupStorage<K, V> extends AutoCloseable {
     void delete(Set<K> keys);
 
     /**
-     * Evict entries stored in local storage
+     * Evict entries stored in local storage belongs to a source endpointId
      * @param keys
      */
-    void evict(Set<K> keys);
+    void evict(UUID sourceEndpointId, Set<K> keys);
 
     /**
      * Clear all entries from local backups

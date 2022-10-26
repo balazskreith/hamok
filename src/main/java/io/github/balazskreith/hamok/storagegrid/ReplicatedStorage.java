@@ -33,55 +33,26 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         this.config = config;
         this.storage = storage;
         this.standalone = endpoint.getRemoteEndpointIds().size() < 1;
+        this.inputStreamer = new InputStreamer<>(config.maxMessageKeys(), config.maxMessageValues());
         this.endpoint = endpoint
             .onGetKeysRequest(request -> {
                 var keys = this.storage.keys();
                 var response = request.createResponse(keys);
                 this.endpoint.sendGetKeysResponse(response);
-            }).onGetEntriesRequest(getEntriesRequest -> {
+            })
+            .onGetEntriesRequest(getEntriesRequest -> {
                 var entries = this.storage.getAll(getEntriesRequest.keys());
                 var response = getEntriesRequest.createResponse(entries);
                 this.endpoint.sendGetEntriesResponse(response);
-            }).onDeleteEntriesRequest(request -> {
-                var keys = request.keys();
-                Set<K> deletedKeys = Collections.emptySet();
-                if (0 < keys.size()) {
-                    deletedKeys = this.storage.deleteAll(keys);
-                }
-                // only the same endpoint can resolve in replicated storage
+            })
+            .onClearEntriesRequest(request -> {
+                this.storage.clear();
                 if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
-                    var response = request.createResponse(deletedKeys);
-                    this.endpoint.sendDeleteEntriesResponse(response);
+                    var response = request.createResponse();
+                    this.endpoint.sendClearEntriesResponse(response);
                 }
-            }).onUpdateEntriesNotification(notification -> {
-                // in storage sync this notification comes from the leader to
-                // update all entries
-                logger.info("{} updating storage {} by applying {} number of entries",
-                        this.endpoint.getLocalEndpointId(),
-                        this.getId(),
-                        notification.entries().size()
-                );
-                if (0 < notification.entries().size()) {
-                    this.storage.setAll(notification.entries());
-                }
-            }).onUpdateEntriesRequest(request -> {
-                var entries = request.entries();
-                Map<K, V> oldEntries = Collections.emptyMap();
-                if (0 < entries.size()) {
-                    oldEntries = this.storage.setAll(entries);
-                }
-                // only the same endpoint can resolve in replicated storage
-                if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
-                    var response = request.createResponse(oldEntries);
-                    this.endpoint.sendUpdateEntriesResponse(response);
-                }
-            }).onDeleteEntriesNotification(notification -> {
-                // this notification should not occur in replicated storage
-                logger.warn("Unexpected notification occurred in {}. request: {}", this.getClass().getSimpleName(), notification);
-            }).onInsertEntriesNotification(notification -> {
-                // this notification should not occur in replicated storage
-                logger.warn("Unexpected notification occurred in {}. request: {}", this.getClass().getSimpleName(), notification);
-            }).onInsertEntriesRequest(request -> {
+            })
+            .onInsertEntriesRequest(request -> {
                 var entries = request.entries();
                 Map<K, V> oldEntries = Collections.emptyMap();
                 if (0 < entries.size()) {
@@ -94,30 +65,89 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                     this.endpoint.sendInsertEntriesResponse(response);
                 }
 
-            }).onRemoteEndpointDetached(remoteEndpointId -> {
+            })
+            .onUpdateEntriesRequest(request -> {
+                var entries = request.entries();
+                Map<K, V> oldEntries = Collections.emptyMap();
+                if (0 < entries.size()) {
+                    oldEntries = this.storage.setAll(entries);
+                }
+                // only the same endpoint can resolve in replicated storage
+                if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
+                    var response = request.createResponse(oldEntries);
+                    this.endpoint.sendUpdateEntriesResponse(response);
+                }
+            })
+            .onDeleteEntriesRequest(request -> {
+                var keys = request.keys();
+                Set<K> deletedKeys = Collections.emptySet();
+                if (0 < keys.size()) {
+                    deletedKeys = this.storage.deleteAll(keys);
+                }
+                // only the same endpoint can resolve in replicated storage
+                if (UuidTools.equals(this.endpoint.getLocalEndpointId(), request.sourceEndpointId())) {
+                    var response = request.createResponse(deletedKeys);
+                    this.endpoint.sendDeleteEntriesResponse(response);
+                }
+            })
+            .onUpdateEntriesNotification(notification -> {
+                    // in storage sync this notification comes from the leader to
+                    // update all entries
+                    logger.info("{} updating storage {} by applying {} number of entries",
+                            this.endpoint.getLocalEndpointId(),
+                            this.getId(),
+                            notification.entries().size()
+                    );
+                    if (0 < notification.entries().size()) {
+                        this.storage.setAll(notification.entries());
+                    }
+            })
+            .onDeleteEntriesNotification(notification -> {
+                // this notification should not occur in replicated storage
+                logger.warn("Unexpected notification occurred in {}. request: {}", this.getClass().getSimpleName(), notification);
+            })
+            .onInsertEntriesNotification(notification -> {
+                // this notification should not occur in replicated storage
+                logger.warn("Unexpected notification occurred in {}. request: {}", this.getClass().getSimpleName(), notification);
+            })
+            .onRemoteEndpointDetached(remoteEndpointId -> {
                 this.standalone = this.endpoint.getRemoteEndpointIds().size() < 1;
-            }).onRemoteEndpointJoined(remoteEndpointId -> {
+            })
+            .onRemoteEndpointJoined(remoteEndpointId -> {
 
-            }).onLeaderIdChanged(leaderIdHolder -> {
-                if (!this.standalone || leaderIdHolder.orElse(null) == null) {
-                    // if the endpoint is already part of the cluster
-                    // or the elected leader is null?! then we don't do anything
+            })
+            .onLeaderIdChanged(leaderIdHolder -> {
+                if (leaderIdHolder.isEmpty()) {
                     return;
                 }
-                // we need to dump everything we have
+                var wasAlone = this.standalone;
                 this.standalone = false;
+                if (!wasAlone) {
+                    return;
+                }
+                // dumping items only we have!
                 var keys = this.storage.keys();
                 if (keys.isEmpty()) {
                     return;
                 }
-                var entries = this.storage.getAll(keys);
-                logger.trace("Creating request to insert {} entries from {}", entries.size(), this.endpoint.getLocalEndpointId());
-                var insertedEntries = this.endpoint.requestInsertEntries(entries);
-                insertedEntries.keySet().stream()
-                    .filter(key -> !keys.contains(key))
-                    .forEach(key -> {
-                        logger.warn("{} member tried to insert an already existing entry to the cluster after joined to the cluster. key: {}", this.storage.getId(), key);
-                    });
+                var leaderId = leaderIdHolder.get();
+                Set<K> remainingKeys;
+                if (UuidTools.notEquals(leaderId, this.endpoint.getLocalEndpointId())) {
+                    var remoteEntries = this.endpoint.requestGetEntries(keys, Set.of(leaderId));
+                    if (0 < remoteEntries.size()) {
+                        this.storage.setAll(remoteEntries);
+                    }
+                    remainingKeys = keys.stream().filter(key -> !remoteEntries.containsKey(key)).collect(Collectors.toSet());
+                } else {
+                    remainingKeys = keys;
+                }
+
+                if (0 < remainingKeys.size()) {
+                    var remainingEntries = this.storage.getAll(remainingKeys);
+                    this.inputStreamer.streamEntries(remainingEntries)
+                            .forEach(requestedEntries -> this.endpoint.requestUpdateEntries(requestedEntries));
+                    logger.info("Dumping {} entries into storage {} to be in sync with the cluster", remainingEntries.size(), this.getId());
+                }
             });
 
         this.collectedEvents = this.storage.events()
@@ -138,7 +168,6 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                     // evicted items from local storage happens when clear is called.
                 }))
                 .build();
-        this.inputStreamer = new InputStreamer<>(config.maxMessageKeys(), config.maxMessageValues());
     }
 
     public CollectedStorageEvents<K, V> collectedEvents() {
@@ -248,7 +277,11 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
 
     @Override
     public void clear() {
-        this.storage.clear();
+        if(this.standalone) {
+            this.storage.clear();
+            return;
+        }
+        this.endpoint.requestClearEntries();
     }
 
     @Override
@@ -322,43 +355,46 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         return this.config;
     }
 
-    private boolean executeSync() {
+    StorageSyncResult executeSync() {
         var leaderId = this.endpoint.getLeaderId();
         if (leaderId == null) {
-            return false;
+            return new StorageSyncResult(
+                    true,
+                    Collections.emptyList()
+            );
         }
 
-        var destinationIds = Set.of(leaderId);
-        var keys = this.endpoint.requestGetKeys(destinationIds);
-        var entries = this.endpoint.requestGetEntries(keys, destinationIds);
-
-        var storageSizeBefore = this.storage.size();
-        this.storage.clear();
-        this.storage.setAll(entries);
-        var storageSizeAfter = this.storage.size();
-        logger.info("Executed storage sync on {}. old storage size: {}, new storage size: {}, leader: {}",
-                this.storage.getId(),
-                storageSizeBefore,
-                storageSizeAfter,
-                leaderId
-        );
-        return true;
-    }
-
-    static<U, R> GridActor createGridMember(ReplicatedStorage<U, R> subject) {
-        var storage = subject.storage;
-        var endpoint = subject.endpoint;
-        return GridActor.builder()
-                .setIdentifier(endpoint.getStorageId())
-                .setMessageAcceptor(endpoint::receive)
-                .setCloseAction(() -> {
-                    try {
-                        storage.close();
-                    } catch (Exception e) {
-                        logger.warn("Error occurred while closing storage {}", storage.getId(), e);
-                    }
-                })
-                .setSyncExecutor(subject::executeSync)
-                .build();
+        try {
+            var destinationIds = Set.of(leaderId);
+            var keys = this.endpoint.requestGetKeys(destinationIds);
+            var entries = this.inputStreamer.streamKeys(keys)
+                    .flatMap(batchedKeys -> this.endpoint.requestGetEntries(batchedKeys, destinationIds).entrySet().stream())
+                    .collect(Collectors.toMap(
+                            Map.Entry::getKey,
+                            Map.Entry::getValue,
+                            (v1, v2) -> {
+                                return v2;
+                            }
+                    ));
+            var storageSizeBefore = this.storage.size();
+            this.storage.clear();
+            this.storage.setAll(entries);
+            var storageSizeAfter = this.storage.size();
+            logger.info("Executed storage sync on {}. old storage size: {}, new storage size: {}, leader: {}",
+                    this.storage.getId(),
+                    storageSizeBefore,
+                    storageSizeAfter,
+                    leaderId
+            );
+            return new StorageSyncResult(
+                    true,
+                    Collections.emptyList()
+            );
+        } catch (Exception ex) {
+            return new StorageSyncResult(
+                    false,
+                    List.of(ex.getMessage())
+            );
+        }
     }
 }

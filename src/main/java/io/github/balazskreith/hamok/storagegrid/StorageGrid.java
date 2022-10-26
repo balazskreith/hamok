@@ -3,41 +3,48 @@ package io.github.balazskreith.hamok.storagegrid;
 import io.github.balazskreith.hamok.HamokError;
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Disposer;
-import io.github.balazskreith.hamok.common.MapUtils;
+import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.raccoons.Raccoon;
 import io.github.balazskreith.hamok.raccoons.events.HelloNotification;
-import io.github.balazskreith.hamok.storagegrid.messages.GridOpSerDe;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
-import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
-import io.github.balazskreith.hamok.storagegrid.messages.SubmitRequest;
+import io.github.balazskreith.hamok.storagegrid.messages.*;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Scheduler;
-import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
+import java.io.Closeable;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * Creates an instance represents the Storage grid in the cluster
  */
-public class StorageGrid implements Disposable {
+public class StorageGrid implements Closeable {
     private static final Logger logger = LoggerFactory.getLogger(StorageGrid.class);
 
     public static StorageGridBuilder builder() {
         return new StorageGridBuilder();
     }
 
-    private final AtomicReference<CompletableFuture<Boolean>> pendingSync = new AtomicReference<>(null);
-    private final Map<UUID, SubmitRequest> pendingSubmits;
+    public enum State {
+        RUN,
+        SYNCING,
+        CLOSED
+    }
 
-    private final Map<String, GridActor> actors = new ConcurrentHashMap<>();
+    private final AtomicReference<CompletableFuture<Boolean>> pendingSync = new AtomicReference<>(null);
+    private final Map<UUID, CompletableFuture<StorageSyncResponse>> pendingStorageSyncRequests = new ConcurrentHashMap<>();
+
+    private final Map<String, StorageInGrid> storages = new ConcurrentHashMap<>();
     private final GridOpSerDe gridOpSerDe;
     private final Subject<Message> sender = PublishSubject.<Message>create().toSerialized();
     private final Subject<Message> receiver = PublishSubject.<Message>create().toSerialized();
@@ -53,6 +60,12 @@ public class StorageGrid implements Disposable {
     private final String context;
     private final StorageGridTransport transport;
 
+    private final Endpoints endpoints;
+    private final Events events;
+    private final RaftInfo raftInfo;
+    private volatile State state = State.RUN;
+    private boolean standalone = true;
+
     StorageGrid(
             StorageGridConfig config,
             StorageGridExecutors executors,
@@ -66,22 +79,52 @@ public class StorageGrid implements Disposable {
         this.gridOpSerDe = gridOpSerDe;
         this.context = context;
         this.submissionScheduler = Schedulers.from(this.executors.getSubmissionExecutor());
-        this.pendingSubmits = new ConcurrentHashMap<>();
         var observableSending = this.sender.observeOn(Schedulers.from(this.executors.getSendingMessageExecutor()));
         this.transport = StorageGridTransport.create(this.receiver, observableSending);
         var observableReceiving = this.receiver;
+        this.events = new Events(
+                this.raccoon.changedLeaderId(),
+                this.raccoon.joinedRemotePeerId(),
+                this.raccoon.detachedRemotePeerId()
+        );
+        this.endpoints = new Endpoints() {
+            @Override
+            public UUID getLocalEndpointId() {
+                return raccoon.getId();
+            }
+
+            @Override
+            public Set<UUID> getRemoteEndpointIds() {
+                return raccoon.getRemoteEndpointIds();
+            }
+
+            @Override
+            public UUID getLeaderEndpointId() {
+                return raccoon.getLeaderId();
+            }
+        };
+        this.raftInfo = new RaftInfo() {
+            @Override
+            public int getCommitIndex() {
+                return raccoon.getCommitIndex();
+            }
+        };
         this.disposer = Disposer.builder()
                 .addDisposable(this.raccoon)
                 .addSubject(this.sender)
                 .addSubject(this.receiver)
                 .addDisposable(observableReceiving.subscribe(message -> {
-                    logger.trace("{} received message (type: {}) from {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.sourceId.toString().substring(0, 8));
-                    if (UuidTools.equals(message.sourceId, this.getLocalEndpointId())) {
+                    if (State.CLOSED.equals(this.state)) {
+                        logger.warn("StorageGrid ({}) is received a message after it is closed", this.context);
+                        return;
+                    }
+                    logger.trace("{} received message (type: {}) from {}", this.endpoints.getLocalEndpointId().toString().substring(0, 8), message.type, message.sourceId.toString().substring(0, 8));
+                    if (UuidTools.equals(message.sourceId, this.endpoints.getLocalEndpointId())) {
                         // multicast dispatch to everywhere, but
                         // packets sent to wire should not be received on loopback
                         return;
                     }
-                    if (message.destinationId == null || UuidTools.equals(message.destinationId, this.getLocalEndpointId())) {
+                    if (message.destinationId == null || UuidTools.equals(message.destinationId, this.endpoints.getLocalEndpointId())) {
                         this.dispatch(message);
                     } else {
 //                        logger.warn("Message destination {} is not for this local endpoint {} {}", message.destinationId, this.getLocalEndpointId());
@@ -108,14 +151,14 @@ public class StorageGrid implements Disposable {
 
                 }))
                 .addDisposable(this.raccoon.detachedRemotePeerId().subscribe(remoteEndpointId -> {
-
+                    this.standalone = this.endpoints.getRemoteEndpointIds().size() < 1;
                 }))
                 .addDisposable(this.raccoon.outboundEvents().endpointStateNotifications().subscribe(notification -> {
                     var message = this.gridOpSerDe.serializeEndpointStatesNotification(notification);
                     this.send(message);
                 }))
                 .addDisposable(this.raccoon.outboundEvents().helloNotifications().subscribe(notification -> {
-                    var leaderId = this.getLeaderId();
+                    var leaderId = this.endpoints.getLeaderEndpointId();
                     if (leaderId != null) {
                         notification = new HelloNotification(notification.sourcePeerId(), leaderId);
                     }
@@ -123,40 +166,41 @@ public class StorageGrid implements Disposable {
                     this.send(message);
                 }))
                 .addDisposable(this.raccoon.changedLeaderId().subscribe(newLeaderId -> {
-                    logger.info("{} ({}) is informed that the leader is changed to: {}", this.getLocalEndpointId(), this.context, newLeaderId);
+                    logger.info("{} ({}) is informed that the leader is changed to: {}", this.endpoints.getLocalEndpointId(), this.context, newLeaderId);
+                    this.standalone = false;
+                    if (newLeaderId.isPresent()) {
+                        this.sync(120 * 1000);
+                    }
                 }))
                 .addDisposable(this.raccoon.committedEntries().subscribe(logEntry -> {
                     // message is committed to the quorum of the cluster, so we can dispatch it
-                    logger.debug("{} Committed message is received (leader: {}). commitIndex {}. Message: {}", this.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), logEntry.entry());
+                    logger.debug("{} Committed message is received (leader: {}). commitIndex {}. Message: {}", this.endpoints.getLocalEndpointId(), this.raccoon.getLeaderId(), logEntry.index(), logEntry.entry());
                     this.dispatch(logEntry.entry());
                 }))
                 .addDisposable(this.raccoon.syncRequests().subscribe(signal -> {
-                    // this cannot be requested by the leader only the follower, so
-                    // we are "sure" that our local endpoint is not the leader endpoint.
                     try {
-                        var synced = this.executeSync();
+                        var synced = this.executeSync(-1, false);
                         synced.thenApply(signal::complete);
                     } catch (Throwable t) {
-                        this.triggerHamokError(HamokError.FAILED_SYNC, t);
+                        logger.error("Error occurred while syncing", t);
                     }
                 }))
                 .onCompleted(() -> {
-                    logger.info("{} ({}) is disposed", this.getLocalEndpointId(), this.getContext());
+                    logger.info("{} ({}) is disposed", this.endpoints.getLocalEndpointId(), this.getContext());
                 })
                 .build();
-
-        logger.info("{} ({}) is created", this.getLocalEndpointId(), this.getContext());
+        logger.info("{} ({}) is created", this.endpoints.getLocalEndpointId(), this.getContext());
         this.raccoon.start();
     }
 
     private void dispatch(Message message) {
         var type = MessageType.valueOfOrNull(message.type);
         if (type == null) {
-            logger.warn("{} ({}) received an unrecognized message {}", this.getLocalEndpointId(), this.context, message);
+            logger.warn("{} ({}) received an unrecognized message {}", this.endpoints.getLocalEndpointId(), this.context, message);
             return;
         }
         this.metrics.incrementReceivedMessages();
-        logger.debug("{} ({}) received message type {} ", this.getLocalEndpointId(), this.context, message.type);
+        logger.debug("{} ({}) received message type {} ", this.endpoints.getLocalEndpointId(), this.context, message.type);
 //        if (UuidTools.equals(this.getLocalEndpointId(), message.sourceId)) {
 //            logger.warn("Self Addressed message?", message);
 //        }
@@ -185,7 +229,36 @@ public class StorageGrid implements Disposable {
                 var voteResponse = this.gridOpSerDe.deserializeRaftVoteResponse(message);
                 this.raccoon.inboundEvents().voteResponse().onNext(voteResponse);
             }
+            case STORAGE_SYNC_REQUEST -> {
+                if (UuidTools.notEquals(this.endpoints.getLocalEndpointId(), this.endpoints.getLeaderEndpointId())) {
+                    return;
+                }
+                // so many junks, only the commitIndex worth anything now
+                var response = this.gridOpSerDe.serializeStorageSyncResponse(new StorageSyncResponse(
+                        message.requestId,
+                        message.sourceId,
+                        message.raftLeaderId,
+                        this.raccoon.getNumberOfCommits(),
+                        this.raccoon.getLastApplied(),
+                        this.raccoon.getCommitIndex()
+                ));
+                this.send(response);
+            }
+            case STORAGE_SYNC_RESPONSE -> {
+                if (message.requestId == null) {
+                    logger.warn("Received Message does not have a requestId. {}", message);
+                    return;
+                }
+                var promise = this.pendingStorageSyncRequests.remove(message.requestId);
+                if (promise != null) {
+                    var storageSyncResponse = this.gridOpSerDe.deserializeStorageSyncResponse(message);
+                    promise.complete(storageSyncResponse);
+                }
+            }
             case SUBMIT_REQUEST -> {
+                if (UuidTools.notEquals(this.endpoints.getLocalEndpointId(), this.endpoints.getLeaderEndpointId())) {
+                    return;
+                }
                 var request = this.gridOpSerDe.deserializeSubmitRequest(message);
                 this.submissionScheduler.scheduleDirect(() -> {
                     var submittedMessage = request.entry();
@@ -204,10 +277,10 @@ public class StorageGrid implements Disposable {
                     logger.warn("{} No requestId attached for response {}", this.context, message);
                     return;
                 }
-                var submission = this.pendingSubmits.remove(requestId);
-                if (submission == null) {
-                    logger.warn("No submission was registered for id {}", submission.requestId());
-                }
+//                var submission = this.pendingSubmits.remove(requestId);
+//                if (submission == null) {
+//                    logger.warn("No submission was registered for id {}", submission.requestId());
+//                }
             }
             default -> {
                 var storageId = message.storageId;
@@ -215,7 +288,7 @@ public class StorageGrid implements Disposable {
                     logger.warn("{} No StorageId is defined for message {}", this.context, message);
                     return;
                 }
-                var member = this.actors.get(storageId);
+                var member = this.storages.get(storageId);
                 if (member == null) {
                     logger.warn("{} No message acceptor for storage {}. Message: {}", this.context, storageId, message);
                     return;
@@ -230,42 +303,16 @@ public class StorageGrid implements Disposable {
     }
 
     public <K, V> SeparatedStorageBuilder<K, V> separatedStorage(Storage<K, V> baseStorage) {
+        this.requiredNotToBeClosed();
         var storageGrid = this;
-        var operationsBuilder = DistributedStorageOperations.<K, V>builder();
         return new SeparatedStorageBuilder<K, V>()
+                .setStorageGrid(storageGrid)
                 .setStorage(baseStorage)
-                .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
-                .setStorageGrid(storageGrid)
-                .onEndpointBuilt(storageEndpoint -> {
-                    operationsBuilder.withEndpoint(storageEndpoint);
-                })
-                .onStorageBuilt(storage -> {
-                    var gridMember = SeparatedStorage.createGridMember(storage);
-                    this.actors.put(gridMember.getIdentifier(), gridMember);
-                    this.metrics.incrementSeparatedStorage();
-                    storage.events().closingStorage().firstElement()
-                            .subscribe(storageId -> {
-                                this.actors.remove(storageId);
-                                this.metrics.decrementSeparatedStorage();
-                            });
-                    logger.info("Created Separated Storage {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
-                })
-                ;
-    }
-
-    @Deprecated
-    public <K, V> PropagatedCollectionsBuilder<K, V, Set<V>> propagatedSets() {
-        var storageGrid = this;
-        return new PropagatedCollectionsBuilder<K, V, Set<V>>()
-                .setStorageGrid(storageGrid)
-                .setNewCollectionSupplier(HashSet::new)
-                .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
-                .onPropagatedCollectionsBuilt(propagatedCollections -> {
-                    var gridMember = PropagatedCollections.createGridMember(propagatedCollections);
-                    this.actors.put(gridMember.getIdentifier(), gridMember);
-                    propagatedCollections.events().closingStorage()
-                            .firstElement().subscribe(this.actors::remove);
-                    logger.info("Created Propagated Collection {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
+                .onStorageInGridReady(storageInGrid -> {
+                    storageInGrid.observableClosed().subscribe(storageId -> {
+                        this.storages.remove(storageId);
+                    });
+                    this.storages.put(storageInGrid.getIdentifier(), storageInGrid);
                 })
                 ;
     }
@@ -291,21 +338,18 @@ public class StorageGrid implements Disposable {
      * @return A builder for a storage
      */
     public <K, V> ReplicatedStorageBuilder<K, V> replicatedStorage(Storage<K, V> baseStorage) {
+        this.requiredNotToBeClosed();
         var storageGrid = this;
         return new ReplicatedStorageBuilder<K, V>()
                 .setStorage(baseStorage)
                 .setStorageGrid(storageGrid)
-                .setMapDepotProvider(MapUtils::makeMapAssignerDepot)
-                .onStorageBuilt(storage -> {
-                    var gridMember = ReplicatedStorage.createGridMember(storage);
-                    this.actors.put(gridMember.getIdentifier(), gridMember);
+                .onStorageInGridReady(storageInGrid -> {
+                    this.storages.put(storageInGrid.getIdentifier(), storageInGrid);
                     this.metrics.incrementReplicatedStorage();
-                    storage.events().closingStorage().firstElement()
-                            .subscribe(storageId -> {
-                                this.actors.remove(storageId);
-                                this.metrics.decrementReplicatedStorage();
-                            });
-                    logger.info("Created Replicatd Storage {} on StorageGrid ()", gridMember.getIdentifier(), this.context);
+                    storageInGrid.observableClosed().subscribe(storageId -> {
+                        this.storages.remove(storageId);
+                        this.metrics.decrementReplicatedStorage();
+                    });
                 })
                 ;
     }
@@ -335,16 +379,20 @@ public class StorageGrid implements Disposable {
         return this.transport;
     }
 
-    /**
-     * Gets the id of the local endpoint
-     * @return the id of the local endpoint
-     */
-    public UUID getLocalEndpointId() {
-        return this.raccoon.getId();
+    public Events events() {
+        return this.events;
     }
 
-    Set<UUID> getRemoteEndpointIds() {
-        return this.raccoon.getRemoteEndpointIds();
+    public Endpoints endpoints() {
+        return this.endpoints;
+    }
+
+    public RaftInfo raft() {
+        return this.raftInfo;
+    }
+
+    public State getState() {
+        return this.state;
     }
 
     int getRequestTimeoutInMs() {
@@ -353,8 +401,8 @@ public class StorageGrid implements Disposable {
 
     void send(Message message) {
         message.sourceId = this.raccoon.getId();
-        logger.trace("{} sending message (type: {}) to {}", this.getLocalEndpointId().toString().substring(0, 8), message.type, message.destinationId);
-        if (UuidTools.equals(message.destinationId, this.getLocalEndpointId())) {
+        logger.trace("{} sending message (type: {}) to {}", this.endpoints.getLocalEndpointId().toString().substring(0, 8), message.type, message.destinationId);
+        if (UuidTools.equals(message.destinationId, this.endpoints.getLocalEndpointId())) {
             // loopback message
             this.dispatch(message);
             return;
@@ -364,33 +412,16 @@ public class StorageGrid implements Disposable {
     }
 
     void submit(Message message) {
-        message.sourceId = this.getLocalEndpointId();
+        message.sourceId = this.endpoints.getLocalEndpointId();
 //        logger.info("{} submit a message {}", this.getLocalEndpointId(), JsonUtils.objectToString(message));
-        var leaderId = this.raccoon.getLeaderId();
-        if (leaderId == null) {
-            var waitForLeader = new CompletableFuture<Optional<UUID>>();
-            this.raccoon.changedLeaderId().firstElement().subscribe(waitForLeader::complete);
-            try {
-                var maybeNewLeaderId = waitForLeader.get(3000, TimeUnit.MILLISECONDS);
-                leaderId = maybeNewLeaderId.orElse(this.raccoon.getLeaderId());
-            } catch (Exception e) {
-                logger.warn("{} Exception occurred while waiting for leaders", this.context, e);
-            }
-
-            if (leaderId == null) {
-                this.submit(message);
-            }
-        }
-        var localEndpointId =  this.raccoon.getId();
-        if (UuidTools.equals(leaderId, localEndpointId)) {
-            logger.debug("{} submitted message is directly routed to the leader", this.getLeaderId());
+        var leaderId = this.endpoints.getLeaderEndpointId();
+        if (UuidTools.equals(message.sourceId, leaderId)) {
+            logger.debug("{} submitted message is directly routed to the leader", this.endpoints.getLeaderEndpointId());
             // we can submit here.
             this.raccoon.submit(message);
             return;
         }
-        // we need to send it to the leader in an embedded message
         var submission = new SubmitRequest(UUID.randomUUID(), leaderId, message);
-        this.pendingSubmits.put(submission.requestId(), submission);
         var request = this.gridOpSerDe.serializeSubmitRequest(submission);
         this.send(request);
     }
@@ -399,83 +430,84 @@ public class StorageGrid implements Disposable {
      * Make the grid to be sync. if no other endpoint is added then
      * this just returns. if there are available endpoints then this method request a storage sync
      */
-    public void sync() throws ExecutionException, InterruptedException, TimeoutException {
-        var remoteEndpointIds = this.raccoon.getRemoteEndpointIds();
-        if (remoteEndpointIds.size() < 1) {
-            return;
+    public boolean sync(int timeoutInMs) throws ExecutionException, InterruptedException, TimeoutException {
+        this.requiredNotToBeClosed();
+        if (UuidTools.equals(this.endpoints.getLocalEndpointId(), this.endpoints().getLeaderEndpointId())) {
+            return true;
         }
-        if (this.getLeaderId() == null) {
-            var holder = new AtomicReference<Disposable>();
-            var wait = new CompletableFuture<Disposable>();
-            wait.thenAccept(disposable -> {
-                disposable.dispose();
-            });
-            var d = this.changedLeaderId().subscribe(o -> {
-                if (o.isEmpty()) return;
-                wait.complete(holder.get());
-            });
-            holder.set(d);
-            wait.get();
+        logger.info("Sync request started on {}", this.endpoints.getLocalEndpointId());
+        var requestId = UUID.randomUUID();
+        var message = this.gridOpSerDe.serializeStorageSyncRequest(new StorageSyncRequest(
+                requestId,
+                this.endpoints.getLocalEndpointId(),
+                this.endpoints.getLeaderEndpointId()
+        ));
+        var promise = new CompletableFuture<StorageSyncResponse>();
+        this.pendingStorageSyncRequests.put(requestId, promise);
+        this.send(message);
+        StorageSyncResponse storageSyncResponse;
+        if (0 < timeoutInMs) {
+            storageSyncResponse = promise.get(timeoutInMs, TimeUnit.MILLISECONDS);
+        } else {
+            storageSyncResponse = promise.get();
         }
-        this.executeSync().get();
+
+        if (storageSyncResponse.commitIndex() - storageSyncResponse.numberOfLogs() <= this.raccoon.getCommitIndex()) {
+            // the storage grid is in sync (theoretically)
+            logger.debug("Grid {} does not require sync, because the commitIndex is {}, the leader commitIndex is {} and the number of logs the leader has {}, should be sufficient",
+                    this.endpoints.getLocalEndpointId(),
+                    this.raccoon.getCommitIndex(),
+                    storageSyncResponse.commitIndex(),
+                    storageSyncResponse.numberOfLogs()
+            );
+            return true;
+        }
+        return this.executeSync(storageSyncResponse.commitIndex(), false).get();
     }
 
-    private CompletableFuture<Boolean> executeSync() throws TimeoutException, ExecutionException, InterruptedException {
+    private CompletableFuture<Boolean> executeSync(int newCommitIndex, boolean setCommitIndexEvenIfSomethingFailed) throws TimeoutException, ExecutionException, InterruptedException {
         var result = new CompletableFuture<Boolean>();
         if (!this.pendingSync.compareAndSet(null, result)) {
             return this.pendingSync.get();
         }
-        this.executors.getSyncOperationExecutor().submit(() -> {
-            var successes = new HashSet<>();
-            for (int attempt = 0; attempt < 3; ++attempt) {
-                for (var actor : this.actors.values()) {
-                    var actorId = actor.getIdentifier();
-                    if (successes.contains(actorId)) {
+        var storageSyncResults = new ConcurrentHashMap<String, CompletableFuture<StorageSyncResult>>();
+        for (var storageInGrid : this.storages.values()) {
+            var storageSyncResultPromise = this.executors.getSyncOperationExecutor()
+                    .submit(() -> storageInGrid.executeSync());
+            var completableFuture = Utils.makeCompletableFuture(storageSyncResultPromise);
+            storageSyncResults.put(storageInGrid.getIdentifier(), completableFuture);
+        }
+        try {
+            CompletableFuture.allOf(storageSyncResults.values().toArray(new CompletableFuture[storageSyncResults.size()])).thenRun(() -> {
+                var success = true;
+                for (var storageSyncResultEntry : storageSyncResults.entrySet()) {
+                    var storageId = storageSyncResultEntry.getKey();
+                    StorageSyncResult storageSyncResult = null;
+                    try {
+                        storageSyncResult = storageSyncResultEntry.getValue().get();
+                    } catch (Exception e) {
+                        logger.warn("Error occurred while getting results from storage sync", e);
+                        success = false;
                         continue;
                     }
-                    logger.info("Start executing sync {}", actorId);
-                    var synced = actor.executeSync();
-                    logger.info("Executed sync {} success: {}", actorId, synced);
-                    if (synced) {
-                        successes.add(actorId);
-                    } else {
-                        logger.warn("Unsuccessful synchronization attempt for {}. ", actor.getIdentifier());
+                    success &= storageSyncResult.success();
+                    if (storageSyncResult.errors() != null && 0 < storageSyncResult.errors().size()) {
+                        logger.warn("Error occurred syncing storage {}. Errors: {}", storageId, storageSyncResult.errors().stream().collect(Collectors.joining(", ")));
                     }
                 }
-                if (successes.size() < this.actors.size()) {
-                    continue;
+                if (success || setCommitIndexEvenIfSomethingFailed) {
+                    if (0 <= newCommitIndex) {
+                        this.raccoon.setCommitIndex(newCommitIndex);
+                    }
                 }
-                break;
-            }
-            this.pendingSync.set(null);
-            var success = this.actors.size() <= successes.size();
-            result.complete(success);
-        });
-        return result;
-    }
-
-    private void triggerHamokError(int code, Throwable exception) {
-        if (!this.errors.hasObservers()) {
-            throw new RuntimeException("Error occurred in operation. code: " + code, exception);
+                result.complete(success);
+                pendingSync.set(null);
+            });
+        } catch (Exception ex) {
+            logger.error("Error occurred while executing sync", ex);
+            pendingSync.set(null);
         }
-        var error = HamokError.create(code, exception);
-        this.errors.onNext(error);
-    }
-
-    /**
-     * Observable event fired when a remote endpoint is joined to the grid
-     * @return Observable interface
-     */
-    public Observable<UUID> joinedRemoteEndpoints() {
-        return this.raccoon.joinedRemotePeerId();
-    }
-
-    /**
-     * Observable event fired when a remote endpoint is left from the grid
-     * @return Observable event
-     */
-    public Observable<UUID> detachedRemoteEndpoints() {
-        return this.raccoon.detachedRemotePeerId();
+        return result;
     }
 
     /**
@@ -486,39 +518,52 @@ public class StorageGrid implements Disposable {
         return this.errors;
     }
 
-    Observable<Long> inactivatedLocalEndpoint() {
-        return this.raccoon.inactivatedLocalPeer();
-    }
-
-    Observable<Optional<UUID>> changedLeaderId() {
-        return this.raccoon.changedLeaderId();
-    }
-
     String getContext() {
         return this.context;
     }
 
-    StorageGridExecutors executors() {
-        return this.executors;
-    }
-
-    /**
-     * Gets the id of the leader in the grid
-     * @return
-     */
-    public UUID getLeaderId() {
-        return this.raccoon.getLeaderId();
-    }
-
     @Override
-    public void dispose() {
-        this.disposer.dispose();
+    public void close() {
+        if (!this.disposer.isDisposed()) {
+            this.disposer.dispose();
+        }
+        this.state = State.CLOSED;
     }
 
-    @Override
-    public boolean isDisposed() {
-        return this.disposer.isDisposed();
+    public interface Endpoints {
+        UUID getLocalEndpointId();
+        Set<UUID> getRemoteEndpointIds();
+        UUID getLeaderEndpointId();
     }
 
+    public interface RaftInfo {
+        int getCommitIndex();
+    }
 
+    public record Events(
+            /**
+             * Observable events fired when the leader id is changed
+             * @return Observable interface
+             */
+            Observable<Optional<UUID>> changedLeaderId,
+            /**
+             * Observable event fired when a remote endpoint is joined to the grid
+             * @return Observable interface
+             */
+            Observable<UUID> joinedRemoteEndpoints,
+            /**
+             * Observable event fired when a remote endpoint is left from the grid
+             * @return Observable event
+             */
+            Observable<UUID> detachedRemoteEndpoints
+
+    ) {
+
+    }
+
+    private void requiredNotToBeClosed() {
+        if (State.CLOSED.equals(this.state)) {
+            throw new IllegalStateException("StorageGrid must not be to perform the requested operation");
+        }
+    }
 }

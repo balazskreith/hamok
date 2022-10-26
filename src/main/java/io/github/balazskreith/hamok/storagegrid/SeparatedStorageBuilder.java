@@ -2,15 +2,17 @@ package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Depot;
+import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.memorystorages.ConcurrentMemoryStorage;
-import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
-import io.github.balazskreith.hamok.storagegrid.backups.BackupStorageBuilder;
+import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
 import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
+import io.reactivex.rxjava3.core.Observable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
+import java.util.function.BinaryOperator;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -18,16 +20,14 @@ import java.util.function.Supplier;
 public class SeparatedStorageBuilder<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(SeparatedStorageBuilder.class);
 
-    private final StorageEndpointBuilder<K, V> storageEndpointBuilder = new StorageEndpointBuilder<>();
-    private final StorageEndpointBuilder<K, V> backupEndpointBuilder = new StorageEndpointBuilder<>();
-    private Consumer<StorageEndpoint<K, V>> storageEndpointBuiltListener = endpoint -> {};
-    private Consumer<SeparatedStorage<K, V>> storageBuiltListener = storage -> {};
+    private Consumer<StorageInGrid> storageInGridListener = null;
 
     private Function<K, byte[]> keyEncoder;
     private Function<byte[], K> keyDecoder;
     private Function<V, byte[]> valueEncoder;
     private Function<byte[], V> valueDecoder;
 
+    private BinaryOperator<V> mergeOp = null;
     private Storage<K, V> actualStorage;
     private StorageGrid grid = null;
     private String storageId = null;
@@ -44,26 +44,14 @@ public class SeparatedStorageBuilder<K, V> {
 
     SeparatedStorageBuilder<K, V> setStorageGrid(StorageGrid storageGrid) {
         this.grid = storageGrid;
-        this.storageEndpointBuilder.setStorageGrid(storageGrid);
-        this.backupEndpointBuilder.setStorageGrid(storageGrid);
         return this;
     }
 
-    SeparatedStorageBuilder<K, V> onEndpointBuilt(Consumer<StorageEndpoint<K, V>> listener) {
-        this.storageEndpointBuiltListener = listener;
+    SeparatedStorageBuilder<K, V> onStorageInGridReady(Consumer<StorageInGrid> listener) {
+        this.storageInGridListener = listener;
         return this;
     }
 
-    SeparatedStorageBuilder<K, V> setMapDepotProvider(Supplier<Depot<Map<K, V>>> depotProvider) {
-        this.storageEndpointBuilder.setMapDepotProvider(depotProvider);
-        this.backupEndpointBuilder.setMapDepotProvider(depotProvider);
-        return this;
-    }
-
-    SeparatedStorageBuilder<K, V> onStorageBuilt(Consumer<SeparatedStorage<K, V>> listener) {
-        this.storageBuiltListener = listener;
-        return this;
-    }
 
     public SeparatedStorageBuilder<K, V> setStorageId(String value) {
         this.storageId = value;
@@ -87,18 +75,22 @@ public class SeparatedStorageBuilder<K, V> {
 
     public SeparatedStorageBuilder<K, V> setMaxMessageKeys(int value) {
         this.maxMessageKeys = value;
-        this.storageEndpointBuilder.setMaxMessageKeys(value);
         return this;
     }
 
     public SeparatedStorageBuilder<K, V> setMaxMessageValues(int value) {
         this.maxMessageValues = value;
-        this.storageEndpointBuilder.setMaxMessageValues(value);
         return this;
     }
 
     public SeparatedStorageBuilder<K, V> setIteratorBatchSize(int value) {
         this.iteratorBatchSize = value;
+        return this;
+    }
+
+    // make it not public yet, as storage also have a binary operator to merge the results
+    SeparatedStorageBuilder<K, V> setMergeOperator(BinaryOperator<V> mergeOperator) {
+        this.mergeOp = mergeOperator;
         return this;
     }
 
@@ -114,12 +106,27 @@ public class SeparatedStorageBuilder<K, V> {
         return this;
     }
 
+    private Function<Message, Iterator<Message>> createResponseMessageChunker() {
+        if (this.maxMessageKeys < 1 && this.maxMessageValues < 1) {
+            return ResponseMessageChunker.createSelfIteratorProvider();
+        }
+        return new ResponseMessageChunker(this.maxMessageKeys, this.maxMessageValues);
+    }
+
+    private Supplier<Depot<Map<K, V>>> createDepotProvider() {
+        if (this.mergeOp == null) {
+            return MapUtils::makeMapAssignerDepot;
+        }
+        return () -> MapUtils.makeMergedMapDepot(mergeOp);
+    }
+
 
     public SeparatedStorage<K, V> build() {
         Objects.requireNonNull(this.valueEncoder, "Codec for values must be defined");
         Objects.requireNonNull(this.valueDecoder, "Codec for values must be defined");
         Objects.requireNonNull(this.keyEncoder, "Codec for keys must be defined");
         Objects.requireNonNull(this.valueDecoder, "Codec for keys must be defined");
+        Objects.requireNonNull(this.storageInGridListener, "Separated Storage builder must have a callback for grid participation");
         if (this.actualStorage == null) {
             Objects.requireNonNull(this.storageId, "Cannot build without storage Id");
             this.actualStorage = ConcurrentMemoryStorage.<K, V>builder()
@@ -144,35 +151,74 @@ public class SeparatedStorageBuilder<K, V> {
                 this.valueEncoder,
                 this.valueDecoder
         );
-        var storageEndpoint = this.storageEndpointBuilder
-                .setStorageId(this.storageId)
-                .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
-                .setMessageSerDe(actualMessageSerDe)
-                .setProtocol(SeparatedStorage.PROTOCOL_NAME)
-                .build();
-        storageEndpoint.requestsDispatcher().subscribe(this.grid::send);
-        this.storageEndpointBuiltListener.accept(storageEndpoint);
+        var responseMessageChunker = this.createResponseMessageChunker();
+        var depotProvider = this.createDepotProvider();
+        var storageEndpoint = new StorageEndpoint<K, V>(
+                this.grid,
+                actualMessageSerDe,
+                responseMessageChunker,
+                depotProvider,
+                SeparatedStorage.PROTOCOL_NAME
+        ) {
+            @Override
+            protected String getStorageId() {
+                return actualStorage.getId();
+            }
 
-        var backupMessageSerDe = new StorageOpSerDe<K, V>(
-                this.keyEncoder,
-                this.keyDecoder,
-                this.valueEncoder,
-                this.valueDecoder
-        );
-        var backupEndpoint = this.backupEndpointBuilder
-                .setStorageId(this.storageId)
-                .setDefaultResolvingEndpointIdsSupplier(this.grid::getRemoteEndpointIds)
-                .setMessageSerDe(backupMessageSerDe)
-                .setProtocol(BackupStorage.PROTOCOL_NAME)
-                .build();
-        backupEndpoint.requestsDispatcher().subscribe(this.grid::send);
-        this.storageEndpointBuiltListener.accept(backupEndpoint);
-        var backups = new BackupStorageBuilder<K, V>()
-                .withEndpoint(backupEndpoint)
-                .build();
+            @Override
+            protected Set<UUID> defaultResolvingEndpointIds(MessageType messageType) {
+                return grid.endpoints().getRemoteEndpointIds();
+            }
 
-        var result = new SeparatedStorage<K, V>(this.actualStorage, storageEndpoint, backups, config);
-        this.storageBuiltListener.accept(result);
+            @Override
+            protected void sendNotification(Message message) {
+                grid.send(message);
+            }
+
+            @Override
+            protected void sendRequest(Message message) {
+                grid.send(message);
+            }
+
+            @Override
+            protected void sendResponse(Message message) {
+                grid.send(message);
+            }
+        };
+
+        var result = new SeparatedStorage<K, V>(this.actualStorage, storageEndpoint, config);
+        this.storageInGridListener.accept(new StorageInGrid() {
+            @Override
+            public String getIdentifier() {
+                return result.getId();
+            }
+
+            @Override
+            public void accept(Message message) {
+                storageEndpoint.receive(message);
+            }
+
+            @Override
+            public void close() {
+                storageEndpoint.close();
+                try {
+                    result.close();
+                } catch (Exception e) {
+                    logger.warn("Error occurred while closing storage", e);
+                }
+            }
+
+            @Override
+            public StorageSyncResult executeSync() {
+                return result.executeSync();
+            }
+
+            @Override
+            public Observable<String> observableClosed() {
+                return result.events().closingStorage();
+            }
+        });
+
         return result;
     }
 }

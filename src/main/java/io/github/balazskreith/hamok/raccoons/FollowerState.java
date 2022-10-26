@@ -114,9 +114,7 @@ class FollowerState extends AbstractState {
         this.timedOutElection = 0;
 
         // set the actual leader
-        if (!UuidTools.equals(this.getLeaderId(), requestChunk.leaderId())) {
-            this.setActualLeaderId(requestChunk.leaderId());
-        }
+        this.setActualLeaderId(requestChunk.leaderId());
 
         // let's touch the leader (wierd sentence and I don't want to elaborate)
         if (UuidTools.notEquals(this.getLocalPeerId(), requestChunk.peerId())) {
@@ -253,7 +251,9 @@ class FollowerState extends AbstractState {
         logger.info("Endpoint state {}", notification);
         var remotePeers = this.remotePeers();
 
-        if (notification.activeEndpointIds() != null) {
+        if (this.config().autoDiscovery() && notification.activeEndpointIds() != null) {
+            // if we do auto discovery then the endpoint state notification updates the state
+            // of the remote endpoints
             var updatedEndpointIds = Set.copyOf(notification.activeEndpointIds());
             var currentEndpointIds = remotePeers.getActiveRemotePeerIds();
             for (var currentEndpointId : currentEndpointIds) {
@@ -275,7 +275,7 @@ class FollowerState extends AbstractState {
         var logs = logs();
         if (logs.getNextIndex() < notification.leaderNextIndex() - notification.numberOfLogs()) {
             if (!this.syncRequested) {
-                this.executeSync(notification.commitIndex());
+//                this.executeSync(notification.commitIndex());
             }
         }
         this.updated.set(Instant.now().toEpochMilli());
@@ -291,7 +291,7 @@ class FollowerState extends AbstractState {
             if (!success) {
                 throw new FailedOperationException("Failed synchronization process");
             }
-            logs().reset(newCommitIndex);
+            this.logs().reset(newCommitIndex);
         });
     }
 
@@ -299,10 +299,10 @@ class FollowerState extends AbstractState {
     public void run() {
         var config = this.config();
         var now = Instant.now().toEpochMilli();
-        if (config.autoDiscovery() && (this.getLeaderId() == null || !this.receivedEndpointNotification)) {
-            // if we don't know any leader, and the auto discovery is on we send hello messages
+        if (this.getLeaderId() == null || !this.receivedEndpointNotification) {
+            // if we don't know any leader, or we have not received endpoint state notification and
             // since the sentHello is -1 by default that ensures hello is sent when state change
-            // happens, which if we have a leader makes it to send the endpoint state
+            // happens, which if we have a leader makes it to send the endpoint state notification
             if (config.sendingHelloTimeoutInMs() < now - this.sentHello.get()) {
                 var notification = new HelloNotification(this.getLocalPeerId(), null);
                 this.sendHelloNotification(notification);
@@ -313,12 +313,13 @@ class FollowerState extends AbstractState {
         var updated = this.updated.get();
         var elapsedInMs = now - updated;
         if (config.followerMaxIdleInMs() + this.extraWaitingTime < elapsedInMs) {
+            // we don't know a leader at this point
+            this.setActualLeaderId(null);
             if (this.remotePeers().size() < 1) {
                 // if we alone, there is not much point to start an election
                 return;
             }
-            // we don't know a leader at this point
-            this.setActualLeaderId(null);
+
             logger.debug("{} is timed out to wait for append logs request (maxIdle: {}, elapsed: {}) Previously unsuccessful elections: {}, extra waiting time: {}", this.getLocalPeerId(), config.followerMaxIdleInMs(), elapsedInMs, this.timedOutElection, this.extraWaitingTime);
             this.elect(this.timedOutElection);
             return;

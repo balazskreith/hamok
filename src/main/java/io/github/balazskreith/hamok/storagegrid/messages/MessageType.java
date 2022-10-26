@@ -40,6 +40,15 @@ public enum MessageType {
     SUBMIT_RESPONSE,
 
     /**
+     * Request to clear the storage
+     */
+    CLEAR_ENTRIES_REQUEST,
+    /**
+     * Response about the cleared storage
+     */
+    CLEAR_ENTRIES_RESPONSE,
+
+    /**
      * Request entries from remote endpoint(s).
      */
     GET_ENTRIES_REQUEST,

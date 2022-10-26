@@ -1,6 +1,5 @@
 package io.github.balazskreith.hamok.raccoons;
 
-import io.github.balazskreith.hamok.rxutils.RxTimeLimitedMap;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
@@ -56,28 +55,9 @@ public class RaccoonBuilder {
         try {
             RaftLogs logs;
             if (this.providedLogEntryMap == null) {
-                if (0 < this.logExpirationTimeInMs) {
-                    logger.info("Raft uses time limited map for logs. Expiration time is {} ms", this.logExpirationTimeInMs);
-                    var map = new RxTimeLimitedMap<Integer, LogEntry>(this.logExpirationTimeInMs);
-                    logs = new RaftLogs(map);
-                    // this is crucial here to feed back the map on a different thread from its emission.
-                    // otherwise, we can cause a deadlock
-                    var disposable = map.expiredEntry().observeOn(Schedulers.computation()).subscribe(entry -> {
-                        logs.expire(entry.getKey());
-                    });
-                    disposer.add(disposable);
-                } else {
-                    logger.info("Raft uses infinite map for logs. No expiration time is set");
-                    var map = new HashMap<Integer, LogEntry>();
-                    logs = new RaftLogs(map);
-                }
-
-            } else {
-                if (0 < this.logExpirationTimeInMs) {
-                    logger.warn("Building with custom map makes the provided building attribute logExpiration time ineffective. If expiration of entry is needed it need to be inside the provided map.");
-                }
-                logs = new RaftLogs(this.providedLogEntryMap);
+                this.providedLogEntryMap = new HashMap<Integer, LogEntry>();
             }
+            logs = new RaftLogs(this.providedLogEntryMap, this.logExpirationTimeInMs);
             var result = new Raccoon(
                     logs,
                     this.config,

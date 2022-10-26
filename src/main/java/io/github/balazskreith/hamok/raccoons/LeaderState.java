@@ -40,6 +40,7 @@ class LeaderState extends AbstractState {
     void start() {
         this.base.setActualLeaderId(this.config().id());
         this.updateFollowers();
+
     }
 
     @Override
@@ -184,6 +185,10 @@ class LeaderState extends AbstractState {
         var config = this.config();
         if (config.autoDiscovery()) {
             this.checkRemotePeers();
+        }
+        if (this.remotePeers().size() < 1) {
+            logger.warn("Leader endpoint become a follower because no remote endpoint is available");
+            this.follow();
         }
     }
 

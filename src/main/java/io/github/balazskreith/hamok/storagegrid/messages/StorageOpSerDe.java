@@ -31,6 +31,33 @@ public class StorageOpSerDe<K, V> {
         return new ClearEntriesNotification(message.sourceId);
     }
 
+    public Message serializeClearEntriesRequest(ClearEntriesRequest request) {
+        var result = new Message();
+        result.type = MessageType.CLEAR_ENTRIES_REQUEST.name();
+        result.requestId = request.requestId();
+        return result;
+    }
+
+    public ClearEntriesRequest deserializeClearEntriesRequest(Message message) {
+        return new ClearEntriesRequest(message.requestId, message.sourceId);
+    }
+
+    public Message serializeClearEntriesResponse(ClearEntriesResponse response) {
+        var result = new Message();
+        result.type = MessageType.CLEAR_ENTRIES_RESPONSE.name();
+        result.destinationId = response.destinationEndpointId();
+        result.requestId = response.requestId();
+        return result;
+    }
+
+    public ClearEntriesResponse deserializeClearEntriesResponse(Message message) {
+        return new ClearEntriesResponse(
+                message.requestId,
+                message.destinationId
+        );
+    }
+
+
     public Message serializeGetKeysRequest(GetKeysRequest request) {
         var result = new Message();
         result.type = MessageType.GET_KEYS_REQUEST.name();

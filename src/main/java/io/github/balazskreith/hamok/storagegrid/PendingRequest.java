@@ -26,6 +26,7 @@ public class PendingRequest implements Consumer<Message> {
     private int timeoutInMs = 0;
     private int receivedResponse = 0;
     private int neededResponses = -1;
+//    private boolean resolveOnTimeouts = false;
     private List<Message> responses = new LinkedList<>();
     private Set<UUID> pendingEndpointIds = new HashSet<>();
     private CompletableFuture<Void> completableFuture = new CompletableFuture<>();

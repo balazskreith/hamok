@@ -9,7 +9,7 @@ public record RaccoonConfig(
         int heartbeatInMs,
         int sendingHelloTimeoutInMs,
         int peerMaxIdleTimeInMs,
-        int applicationCommitIndexSyncTimeoutInMs,
+        int applicationCommitIndexSyncTimeoutInMs, // deprecated
         boolean autoDiscovery
 ) {
     public static RaccoonConfig create() {
@@ -23,6 +23,7 @@ public record RaccoonConfig(
                 10000, // the timeout for waiting an application orchestrated commit sync
                 true // indicate if remote peer discovery should be automatic or manual
         );
+
     }
 
     public RaccoonConfig copyAndSetId(UUID id) {

@@ -15,6 +15,8 @@ import java.util.function.Function;
 
 public class SeparatedStoragesEnv {
     public static final String STORAGE_ID = "Test-Storage-" + UUID.randomUUID().toString().substring(0, 8);
+    private InMemoryDistributedBackups euWestBackups = null;
+    private InMemoryDistributedBackups usEastBackups = null;
     private StorageGrid euWest;
     private StorageGrid usEast;
     private SeparatedStorage<String, Integer> euStorage;
@@ -25,11 +27,20 @@ public class SeparatedStoragesEnv {
     private int maxRetentionTimeInMs = 0;
     private int maxCollectedStorageEvents = 1;
     private int maxCollectedStorageTimeInMs = 0;
+    private int maxBackupEvents = 0;
+    private int maxBackupTimeInMs = 0;
     private AtomicReference<StorageGrid> leaderGrid = new AtomicReference<>(null);
 
     public SeparatedStoragesEnv setMaxRetention(int maxRetentionTimeInMs) {
         this.requireNotCreated();
         this.maxRetentionTimeInMs = maxRetentionTimeInMs;
+        return this;
+    }
+
+    public SeparatedStoragesEnv addBackups(int maxEvents, int maxTimeInMs) {
+        this.requireNotCreated();
+        this.maxBackupEvents = maxEvents;
+        this.maxBackupTimeInMs = maxTimeInMs;
         return this;
     }
 
@@ -67,6 +78,22 @@ public class SeparatedStoragesEnv {
                 .withRaftMaxLogRetentionTimeInMs(this.maxRetentionTimeInMs)
                 .build();
 
+        if (0 < this.maxBackupTimeInMs || 0 < this.maxBackupEvents) {
+            var BACKUP_STORAGE_ID = "Backups-" + UUID.randomUUID().toString().substring(0, 8);
+            this.euWestBackups = InMemoryDistributedBackups.builder()
+                    .setId(BACKUP_STORAGE_ID)
+                    .setMaxCollectingEvents(maxBackupEvents)
+                    .setMaxEventCollectingTimeInMs(maxBackupTimeInMs)
+                    .setGrid(this.euWest)
+                    .build();
+
+            this.usEastBackups = InMemoryDistributedBackups.builder()
+                    .setId(BACKUP_STORAGE_ID)
+                    .setMaxCollectingEvents(maxBackupEvents)
+                    .setMaxEventCollectingTimeInMs(maxBackupTimeInMs)
+                    .setGrid(this.usEast)
+                    .build();
+        }
         Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
         Function<byte[], Integer> intDec = b -> ByteBuffer.wrap(b).getInt();
         Function<String, byte[]> strEnc = s -> s.getBytes();
@@ -78,6 +105,7 @@ public class SeparatedStoragesEnv {
                 .setMaxCollectedStorageTimeInMs(this.maxCollectedStorageTimeInMs)
                 .setKeyCodec(strEnc, strDec)
                 .setValueCodec(intEnc, intDec)
+                .setDistributedBackups(this.euWestBackups)
                 .build();
 
         this.usStorage = usEast.<String, Integer>separatedStorage()
@@ -86,6 +114,7 @@ public class SeparatedStoragesEnv {
                 .setMaxCollectedStorageTimeInMs(this.maxCollectedStorageTimeInMs)
                 .setKeyCodec(strEnc, strDec)
                 .setValueCodec(intEnc, intDec)
+                .setDistributedBackups(this.usEastBackups)
                 .build();
 
         this.created = true;
@@ -102,6 +131,14 @@ public class SeparatedStoragesEnv {
     public void await() throws ExecutionException, InterruptedException, TimeoutException {
         this.requireCreated();
         this.await(0);
+    }
+
+    public InMemoryDistributedBackups getEuWestBackups() {
+        return this.euWestBackups;
+    }
+
+    public InMemoryDistributedBackups getUsEastBackups() {
+        return this.usEastBackups;
     }
 
     public void await(int timeoutInMs) throws ExecutionException, InterruptedException, TimeoutException {
@@ -231,13 +268,14 @@ public class SeparatedStoragesEnv {
 
         this.usEast.addRemoteEndpointId(this.euWest.endpoints().getLocalEndpointId());
         this.euWest.addRemoteEndpointId(this.usEast.endpoints().getLocalEndpointId());
+        this.router.enable(euWest.endpoints().getLocalEndpointId());
 
         if (0 < timeoutInMs) {
             joined.get(timeoutInMs, TimeUnit.MILLISECONDS);
         } else {
             joined.get();
         }
-        this.router.enable(euWest.endpoints().getLocalEndpointId());
+
     }
 
     public void joinUsEast(int timeoutInMs) throws ExecutionException, InterruptedException, TimeoutException {
@@ -255,14 +293,13 @@ public class SeparatedStoragesEnv {
 
         this.usEast.addRemoteEndpointId(this.euWest.endpoints().getLocalEndpointId());
         this.euWest.addRemoteEndpointId(this.usEast.endpoints().getLocalEndpointId());
+        this.router.enable(usEast.endpoints().getLocalEndpointId());
 
         if (0 < timeoutInMs) {
             joined.get(timeoutInMs, TimeUnit.MILLISECONDS);
         } else {
             joined.get();
         }
-        this.router.enable(usEast.endpoints().getLocalEndpointId());
-
     }
 
     public void detachEuWest(int timeoutInMs) throws ExecutionException, InterruptedException, TimeoutException {

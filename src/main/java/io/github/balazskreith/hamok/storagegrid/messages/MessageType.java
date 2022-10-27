@@ -74,6 +74,19 @@ public enum MessageType {
     DELETE_ENTRIES_RESPONSE,
 
     /**
+     * Request to delete entries on a remote endpoint
+     */
+    REMOVE_ENTRIES_REQUEST,
+    /**
+     * Response to a delete request
+     */
+    REMOVE_ENTRIES_RESPONSE,
+
+    EVICT_ENTRIES_REQUEST,
+
+    EVICT_ENTRIES_RESPONSE,
+
+    /**
      * Insert item(s) only if they don't exist. if they
      * exist then it returns with the value associated
      *
@@ -109,6 +122,11 @@ public enum MessageType {
      * Notification about deleting
      */
     DELETE_ENTRIES_NOTIFICATION,
+
+    /**
+     * Notification to evict entries
+     */
+    EVICT_ENTRIES_NOTIFICATION,
 
     /**
      * Notification to remove specific entries from the storage.

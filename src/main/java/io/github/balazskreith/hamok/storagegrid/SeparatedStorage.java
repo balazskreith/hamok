@@ -4,11 +4,14 @@ import io.github.balazskreith.hamok.*;
 import io.github.balazskreith.hamok.common.Disposer;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.SetUtils;
+import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -33,13 +36,16 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
     private final Disposer disposer;
     private final CollectedStorageEvents<K, V> collectedEvents;
     private final InputStreamer<K, V> inputStreamer;
+    private final BackupStorage<K, V> backupStorage;
 
     SeparatedStorage(
             Storage<K, V> storage,
             StorageEndpoint<K, V> endpoint,
+            BackupStorage<K, V> backupStorage,
             SeparatedStorageConfig config
     ) {
         this.config = config;
+        this.backupStorage = backupStorage;
         this.storage = storage;
         this.endpoint = endpoint
             .onGetSizeRequest(getSizeRequest -> {
@@ -62,6 +68,13 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 var deletedKeys = this.storage.deleteAll(request.keys());
                 var response = request.createResponse(deletedKeys);
                 this.endpoint.sendDeleteEntriesResponse(response);
+            })
+            .onEvictEntriesRequest(request -> {
+                if (0 < request.keys().size()) {
+                    this.storage.evictAll(request.keys());
+                }
+                var response = request.createResponse();
+                this.endpoint.sendEvictResponse(response);
             })
             .onUpdateEntriesNotification(notification -> {
                 var entries = notification.entries();
@@ -108,6 +121,91 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
 
         this.collectedEvents = this.storage.events()
                 .collectOn(Schedulers.io(), this.config.maxCollectedActualStorageTimeInMs(), this.config.maxCollectedActualStorageEvents());
+        if (this.backupStorage != null) {
+            var active = new AtomicBoolean(0 < this.endpoint.getRemoteEndpointIds().size());
+            Consumer<Runnable> runIfActive = (action) -> {
+                if (active.get()) {
+                    action.run();
+                }
+            };
+            this.collectedEvents.createdEntries().subscribe(entries -> runIfActive.accept(() -> this.backupStorage.save(entries.stream().collect(Collectors.toMap(
+                    entry -> entry.getKey(),
+                    entry -> entry.getNewValue()
+            )))));
+            this.collectedEvents.updatedEntries().subscribe(entries -> runIfActive.accept(() -> this.backupStorage.save(entries.stream().collect(Collectors.toMap(
+                    entry -> entry.getKey(),
+                    entry -> entry.getNewValue()
+            )))));
+            this.collectedEvents.deletedEntries().subscribe(entries -> runIfActive.accept(() -> this.backupStorage.delete(entries.stream()
+                    .map(ModifiedStorageEntry::getKey)
+                    .collect(Collectors.toSet())
+            )));
+            this.collectedEvents.evictedEntries().subscribe(entries -> runIfActive.accept(() -> this.backupStorage.delete(entries.stream()
+                    .map(ModifiedStorageEntry::getKey)
+                    .collect(Collectors.toSet())
+            )));
+            this.endpoint.onRemoteEndpointDetached(remoteEndpointId -> {
+
+                // restore entries saved from remote endpoint id
+                var backupEntries = this.backupStorage.extract(remoteEndpointId);
+                if (backupEntries != null && 0 < backupEntries.size()) {
+                    var keys = this.storage.keys();
+                    var collidingEntries = backupEntries.keySet().stream()
+                            .filter(keys::contains)
+                            .collect(Collectors.toSet());
+                    var restoringEntries = backupEntries.entrySet().stream()
+                            .filter(entry -> !collidingEntries.contains(entry.getKey()))
+                            .collect(Collectors.toMap(
+                                    Map.Entry::getKey,
+                                    Map.Entry::getValue
+                            ));
+                    if (0 < collidingEntries.size()) {
+                        logger.warn("There were colliding entries after loading backups for endpoint {}. Collising entries: {}", remoteEndpointId, collidingEntries);
+                    }
+                    if (0 < restoringEntries.size()) {
+                        try {
+                            this.storage.restoreAll(restoringEntries);
+                            logger.info("Restored {} number of entries from backup after {} endpoint is detached", restoringEntries.size(), remoteEndpointId);
+                        } catch (Exception ex) {
+                            logger.warn("Exception occurred while restoring entries from backup for remote endpoint {}", remoteEndpointId, ex);
+                        }
+                    }
+                }
+
+                // re-save entries sent to the detached endpoint
+                var notSavedKeys = this.backupStorage.loadFrom(remoteEndpointId).keySet();
+                if (0 < notSavedKeys.size() && 0 < this.endpoint.getRemoteEndpointIds().size()) {
+                    var resendingEntries = this.storage.getAll(notSavedKeys);
+                    this.backupStorage.save(resendingEntries);
+                    logger.info("Moving {} keys from {} to be backed up", notSavedKeys.size(), remoteEndpointId);
+                }
+
+                var isActive = active.get();
+                var goingToActive = 0 < this.endpoint.getRemoteEndpointIds().size();
+                if (!isActive || goingToActive) {
+                    return;
+                }
+                // turn backups off
+                this.backupStorage.clear();
+                active.set(false);
+            });
+            this.endpoint.onRemoteEndpointJoined(remoteEndpointId -> {
+                if (!active.compareAndSet(false, true)) {
+                    return;
+                }
+                // first, check colliding entries
+                try {
+                    this.checkCollidingEntries(Set.of(remoteEndpointId));
+                } catch (Exception ex) {
+                    logger.warn("Check colliding entries failed", ex);
+                }
+
+                // turn backups on
+                var keys = this.storage.keys();
+                var entries = this.storage.getAll(keys);
+                this.backupStorage.save(entries);
+            });
+        }
         this.disposer = Disposer.builder().build();
         this.inputStreamer = new InputStreamer<>(config.maxMessageKeys(), config.maxMessageValues());
     }
@@ -367,19 +465,29 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         return this.config;
     }
 
-    public void checkCollidingEntries() throws FailedOperationException {
-        var localKeys = this.storage.keys();
-        if (localKeys == null || localKeys.size() < 1) {
+    public void checkCollidingEntries() {
+        var remoteEndpointIds = this.endpoint.getRemoteEndpointIds();
+        this.checkCollidingEntries(remoteEndpointIds);
+    }
+
+    private void checkCollidingEntries(Set<UUID> remoteEndpointIds) throws FailedOperationException {
+        if (remoteEndpointIds == null || remoteEndpointIds.size() < 1) {
             return;
         }
-        var remoteEndpointIds = this.endpoint.getRemoteEndpointIds();
-        if (remoteEndpointIds == null || remoteEndpointIds.size() < 1) {
+        var localKeys = this.storage.keys();
+        if (localKeys == null || localKeys.size() < 1) {
             return;
         }
         var collidingKeysToRemoveRemotely = new HashSet<K>();
         for (var remoteEndpointId : remoteEndpointIds) {
             Map<K, V> remoteEntries;
-            remoteEntries = this.endpoint.requestGetEntries(localKeys, Set.of(remoteEndpointId));
+            try {
+                remoteEntries = this.endpoint.requestGetEntries(localKeys, Set.of(remoteEndpointId));
+            } catch (Exception ex) {
+                logger.warn("Cannot get entries from {}", remoteEndpointId, ex);
+                continue;
+            }
+
             if (remoteEntries == null || remoteEntries.size() < 1) {
                 continue;
             }
@@ -392,24 +500,26 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
             }
             // who should keep the collidingEntries?
             if (this.endpoint.getLocalEndpointId().getMostSignificantBits() < remoteEndpointId.getMostSignificantBits()) {
-                this.storage.deleteAll(collidingKeys);
+                this.storage.evictAll(collidingKeys);
+                logger.info("Evicted {} number of colliding entries from local storage due to collusion with {} remote endpoint", collidingKeys.size(), remoteEndpointId);
             } else {
                 collidingKeysToRemoveRemotely.addAll(collidingKeys);
             }
         }
         if (0 < collidingKeysToRemoveRemotely.size()) {
-            this.endpoint.requestDeleteEntries(collidingKeysToRemoveRemotely);
+            this.endpoint.requestEvictEntries(collidingKeysToRemoveRemotely, remoteEndpointIds);
+            logger.info("Evicted {} number of colliding entries from remote storages", collidingKeysToRemoveRemotely.size());
         }
     }
 
     StorageSyncResult executeSync() {
         var remoteEndpointIds = this.endpoint.getRemoteEndpointIds();
         boolean success = true;
-        var removedEntries = 0;
+        var evictedEntries = 0;
         var errors = new LinkedList<String>();
         var localKeys = this.storage.keys();
         if (localKeys.size() < 1) {
-            logger.info("Storage Sync has been performed on storage: {}. Removed Entries: 0, new local storage size: {}", this.getId(), removedEntries, this.storage.size());
+            logger.info("Storage Sync has been performed on storage: {}. Removed Entries: 0, new local storage size: {}", this.getId(), evictedEntries, this.storage.size());
             return new StorageSyncResult(
                     true,
                     Collections.emptyList()
@@ -432,11 +542,11 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                             Map.Entry::getValue
                     ));
             if (0 < collidingEntries.size()) {
-                this.storage.deleteAll(collidingEntries.keySet());
-                removedEntries += collidingEntries.size();
+                this.storage.evictAll(collidingEntries.keySet());
+                evictedEntries += collidingEntries.size();
             }
         }
-        logger.info("Storage Sync has been performed on storage: {}. Removed Entries: {}, new local storage size: {}", this.getId(), removedEntries, this.storage.size());
+        logger.info("Storage Sync has been performed on storage: {}. Evicted Entries: {}, new local storage size: {}", this.getId(), evictedEntries, this.storage.size());
         return new StorageSyncResult(
                 success,
                 errors

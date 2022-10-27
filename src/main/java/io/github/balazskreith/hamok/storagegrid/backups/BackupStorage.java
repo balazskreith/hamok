@@ -1,31 +1,24 @@
 package io.github.balazskreith.hamok.storagegrid.backups;
 
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
-import io.reactivex.rxjava3.core.Observable;
-
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
-public interface BackupStorage<K, V> extends AutoCloseable {
-    String PROTOCOL_NAME = "backup";
-
-    static<U, R> BackupStorageBuilder<U, R> builder() {
-        return new BackupStorageBuilder<>();
-    }
-
-    void receiveMessage(Message message);
+public interface BackupStorage<K, V> {
 
     /**
-     * Missing keys due to external events (remote endpoint detached)
-     * @return
-     */
-    Observable<Set<K>> gaps();
-    /**
-     * Save entries on remote backups
+     * Save entries
      * @param entries
      */
     void save(Map<K, V> entries);
+
+    /**
+     * load entries from destination endpoint id
+     * @param destinationEndpointId
+     * @return
+     */
+    Map<K, Optional<V>> loadFrom(UUID destinationEndpointId);
 
     /**
      * Delete entries saved on remote endpoint backup storages
@@ -34,27 +27,21 @@ public interface BackupStorage<K, V> extends AutoCloseable {
     void delete(Set<K> keys);
 
     /**
-     * Evict entries stored in local storage belongs to a source endpointId
-     * @param keys
-     */
-    void evict(UUID sourceEndpointId, Set<K> keys);
-
-    /**
-     * Clear all entries from local backups
-     */
-    void clear();
-
-    /**
-     * extract all entries belongs to the specified endpoint and stored on local backup storage.
+     * Load entries saved on this
      * @param endpointId
      * @return
      */
     Map<K, V> extract(UUID endpointId);
 
     /**
-     * Measurements and state snapshot representing the underlying backup storage
-     * @return
+     * Evict entries stored in local storage belongs to a source endpointId
+     * @param keys
      */
-    BackupStats metrics();
+    void evict(Set<K> keys, UUID sourceEndpointId);
+
+    /**
+     * Clear all entries from local backups
+     */
+    void clear();
 
 }

@@ -191,6 +191,79 @@ public class StorageOpSerDe<K, V> {
         return new DeleteEntriesResponse<K>(message.requestId, deletedKeys, message.sourceId);
     }
 
+    public Message serializeRemoveEntriesRequest(RemoveEntriesRequest<K> request) {
+        var result = new Message();
+        result.type = MessageType.REMOVE_ENTRIES_REQUEST.name();
+        result.keys = this.serializeKeys(request.keys());
+        result.requestId = request.requestId();
+        return result;
+    }
+
+    public RemoveEntriesRequest<K> deserializeRemoveEntriesRequest(Message message) {
+        var keys = this.deserializeKeys(message.keys);
+        var result = new RemoveEntriesRequest<K>(message.requestId, keys, message.sourceId);
+        return result;
+    }
+
+    public Message serializeRemoveEntriesResponse(RemoveEntriesResponse<K, V> response) {
+        var result = new Message();
+        result.type = MessageType.REMOVE_ENTRIES_RESPONSE.name();
+        var entries = this.serializeEntries(response.removedEntries());
+        result.keys = entries.getKey();
+        result.values = entries.getValue();
+        result.requestId = response.requestId();
+        result.destinationId = response.destinationEndpointId();
+        return result;
+    }
+
+    public RemoveEntriesResponse<K, V> deserializeRemoveEntriesResponse(Message message) {
+        var removedEntries = this.deserializeEntries(message.keys, message.values);
+        return new RemoveEntriesResponse<K, V>(message.requestId, removedEntries, message.sourceId);
+    }
+
+
+
+    public Message serializeEvictEntriesNotification(EvictEntriesNotification<K> notification) {
+        var result = new Message();
+        result.type = MessageType.EVICT_ENTRIES_NOTIFICATION.name();
+        result.keys = this.serializeKeys(notification.keys());
+        result.sourceId = notification.sourceEndpointId();
+        result.destinationId = notification.destinationEndpointId();
+        return result;
+    }
+
+    public EvictEntriesNotification<K> deserializeEvictEntriesNotification(Message message) {
+        var keys = this.deserializeKeys(message.keys);
+        var result = new EvictEntriesNotification<K>(message.sourceId, keys, message.destinationId);
+        return result;
+    }
+
+
+    public Message serializeEvictEntriesRequest(EvictEntriesRequest<K> request) {
+        var result = new Message();
+        result.type = MessageType.EVICT_ENTRIES_REQUEST.name();
+        result.keys = this.serializeKeys(request.keys());
+        result.requestId = request.requestId();
+        return result;
+    }
+
+    public EvictEntriesRequest<K> deserializeEvictEntriesRequest(Message message) {
+        var keys = this.deserializeKeys(message.keys);
+        var result = new EvictEntriesRequest<K>(message.requestId, keys, message.sourceId);
+        return result;
+    }
+
+    public Message serializeEvictEntriesResponse(EvictEntriesResponse<K> response) {
+        var result = new Message();
+        result.type = MessageType.EVICT_ENTRIES_RESPONSE.name();
+        result.requestId = response.requestId();
+        result.destinationId = response.destinationEndpointId();
+        return result;
+    }
+
+    public EvictEntriesResponse<K> deserializeEvictEntriesResponse(Message message) {
+        return new EvictEntriesResponse<K>(message.requestId, message.sourceId);
+    }
 
     public Message serializeUpdateEntriesNotification(UpdateEntriesNotification<K, V> notification) {
         var result = new Message();

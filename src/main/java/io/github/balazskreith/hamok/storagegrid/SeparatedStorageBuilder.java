@@ -4,6 +4,8 @@ import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.memorystorages.ConcurrentMemoryStorage;
+import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
+import io.github.balazskreith.hamok.storagegrid.backups.DistributedBackups;
 import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
 import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
@@ -36,6 +38,7 @@ public class SeparatedStorageBuilder<K, V> {
     private int iteratorBatchSize = 300;
     private int maxMessageKeys = 0;
     private int maxMessageValues = 0;
+    private DistributedBackups distributedBackups = null;
 
 
     SeparatedStorageBuilder() {
@@ -103,6 +106,11 @@ public class SeparatedStorageBuilder<K, V> {
     public SeparatedStorageBuilder<K, V> setValueCodec(Function<V, byte[]> encoder, Function<byte[], V> decoder) {
         this.valueEncoder = encoder;
         this.valueDecoder = decoder;
+        return this;
+    }
+
+    public SeparatedStorageBuilder<K, V> setDistributedBackups(DistributedBackups distributedBackups) {
+        this.distributedBackups = distributedBackups;
         return this;
     }
 
@@ -185,8 +193,22 @@ public class SeparatedStorageBuilder<K, V> {
                 grid.send(message);
             }
         };
-
-        var result = new SeparatedStorage<K, V>(this.actualStorage, storageEndpoint, config);
+        BackupStorage<K, V> backupStorage = null;
+        if (this.distributedBackups != null) {
+            backupStorage = this.distributedBackups.createAdapter(
+                    actualStorage.getId(),
+                    keyEncoder,
+                    keyDecoder,
+                    valueEncoder,
+                    valueDecoder
+            );
+        }
+        var result = new SeparatedStorage<K, V>(
+                this.actualStorage,
+                storageEndpoint,
+                backupStorage,
+                config
+        );
         this.storageInGridListener.accept(new StorageInGrid() {
             @Override
             public String getIdentifier() {

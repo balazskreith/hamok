@@ -39,11 +39,14 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
     private final Subject<Message> clearEntriesRequestSubject = PublishSubject.create();
     private final Subject<Message> getEntriesRequestSubject = PublishSubject.create();
     private final Subject<Message> deleteEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Message> removeEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Message> evictEntriesRequestSubject = PublishSubject.create();
     private final Subject<Message> insertEntriesRequestSubject = PublishSubject.create();
     private final Subject<Message> updateEntriesRequestSubject = PublishSubject.create();
     private final Subject<Message> insertEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> updateEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> deleteEntriesNotificationSubject = PublishSubject.create();
+    private final Subject<Message> evictEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> removeEntriesNotificationSubject = PublishSubject.create();
     private final Subject<Message> getSizeRequestSubject = PublishSubject.create();
     private final Subject<Message> getKeysRequestSubject = PublishSubject.create();
@@ -76,8 +79,11 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
                 .addSubject(this.clearEntriesRequestSubject)
                 .addSubject(this.getEntriesRequestSubject)
                 .addSubject(this.deleteEntriesRequestSubject)
+                .addSubject(this.removeEntriesRequestSubject)
+                .addSubject(this.evictEntriesRequestSubject)
                 .addSubject(this.updateEntriesRequestSubject)
                 .addSubject(this.deleteEntriesNotificationSubject)
+                .addSubject(this.evictEntriesNotificationSubject)
                 .addSubject(this.updateEntriesRequestSubject)
                 .addSubject(this.insertEntriesRequestSubject)
                 .addSubject(this.removeEntriesNotificationSubject)
@@ -125,16 +131,21 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
             case UPDATE_ENTRIES_REQUEST -> this.updateEntriesRequestSubject.onNext(message);
             case INSERT_ENTRIES_REQUEST -> this.insertEntriesRequestSubject.onNext(message);
             case DELETE_ENTRIES_REQUEST -> this.deleteEntriesRequestSubject.onNext(message);
+            case REMOVE_ENTRIES_REQUEST -> this.removeEntriesRequestSubject.onNext(message);
+            case EVICT_ENTRIES_REQUEST -> this.evictEntriesRequestSubject.onNext(message);
             case UPDATE_ENTRIES_NOTIFICATION -> this.updateEntriesNotificationSubject.onNext(message);
             case INSERT_ENTRIES_NOTIFICATION -> this.insertEntriesNotificationSubject.onNext(message);
             case DELETE_ENTRIES_NOTIFICATION -> this.deleteEntriesNotificationSubject.onNext(message);
             case CLEAR_ENTRIES_NOTIFICATION -> this.clearEntriesNotificationSubject.onNext(message);
             case REMOVE_ENTRIES_NOTIFICATION -> this.removeEntriesNotificationSubject.onNext(message);
+            case EVICT_ENTRIES_NOTIFICATION -> this.evictEntriesNotificationSubject.onNext(message);
             case CLEAR_ENTRIES_RESPONSE,
                     DELETE_ENTRIES_RESPONSE,
+                    EVICT_ENTRIES_RESPONSE,
                     GET_ENTRIES_RESPONSE,
                     GET_SIZE_RESPONSE,
                     GET_KEYS_RESPONSE,
+                    REMOVE_ENTRIES_RESPONSE,
                     INSERT_ENTRIES_RESPONSE,
                     UPDATE_ENTRIES_RESPONSE -> this.processResponse(message);
             default -> {
@@ -159,10 +170,25 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
         return this;
     }
 
-
     public StorageEndpoint<K, V> onDeleteEntriesRequest(Consumer<DeleteEntriesRequest<K>> listener) {
         this.disposer.add(this.deleteEntriesRequestSubject
                 .map(this.messageSerDe::deserializeDeleteEntriesRequest)
+                .subscribe(listener)
+        );
+        return this;
+    }
+
+    public StorageEndpoint<K, V> onRemoveEntriesRequest(Consumer<RemoveEntriesRequest<K>> listener) {
+        this.disposer.add(this.deleteEntriesRequestSubject
+                .map(this.messageSerDe::deserializeRemoveEntriesRequest)
+                .subscribe(listener)
+        );
+        return this;
+    }
+
+    public StorageEndpoint<K, V> onEvictEntriesRequest(Consumer<EvictEntriesRequest<K>> listener) {
+        this.disposer.add(this.evictEntriesRequestSubject
+                .map(this.messageSerDe::deserializeEvictEntriesRequest)
                 .subscribe(listener)
         );
         return this;
@@ -186,6 +212,13 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
     public StorageEndpoint<K, V> onDeleteEntriesNotification(Consumer<DeleteEntriesNotification<K>> listener) {
         this.deleteEntriesNotificationSubject
                 .map(this.messageSerDe::deserializeDeleteEntriesNotification)
+                .subscribe(listener);
+        return this;
+    }
+
+    public StorageEndpoint<K, V> onEvictEntriesNotification(Consumer<EvictEntriesNotification<K>> listener) {
+        this.evictEntriesNotificationSubject
+                .map(this.messageSerDe::deserializeEvictEntriesNotification)
                 .subscribe(listener);
         return this;
     }
@@ -296,6 +329,11 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
         return this;
     }
 
+    public void sendRemoveEntriesResponse(RemoveEntriesResponse<K, V> response) {
+        var message = this.messageSerDe.serializeRemoveEntriesResponse(response);
+        this.dispatchResponse(message);
+    }
+
     public Set<K> requestGetKeys() {
         return this.requestGetKeys(null);
     }
@@ -356,6 +394,38 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
                 .map(DeleteEntriesResponse::deletedKeys)
                 .flatMap(Set::stream)
                 .collect(Collectors.toSet());
+    }
+
+    public void requestEvictEntries(Set<K> keys) {
+        this.requestEvictEntries(keys, null);
+    }
+
+    public void requestEvictEntries(Set<K> keys, Set<UUID> destinationEndpointIds) {
+        var request = EvictEntriesRequest.<K>builder()
+                .setKeys(keys)
+                .build();
+        var message = this.messageSerDe.serializeEvictEntriesRequest(request);
+        this.request(message, destinationEndpointIds).stream()
+                .map(this.messageSerDe::deserializeEvictEntriesResponse);
+    }
+
+
+
+    public Map<K, V> requestRemoveEntries(Set<K> keys) {
+        return this.requestRemoveEntries(keys, null);
+    }
+
+    public Map<K, V> requestRemoveEntries(Set<K> keys, Set<UUID> destinationEndpointIds) {
+        var request = RemoveEntriesRequest.<K>builder()
+                .setKeys(keys)
+                .build();
+        var message = this.messageSerDe.serializeRemoveEntriesRequest(request);
+        var depot = depotProvider.get();
+        this.request(message, destinationEndpointIds).stream()
+                .map(this.messageSerDe::deserializeRemoveEntriesResponse)
+                .map(RemoveEntriesResponse::removedEntries)
+                .forEach(depot::accept);
+        return depot.get();
     }
 
     public void sendDeleteEntriesNotification(DeleteEntriesNotification<K> notification) {
@@ -422,6 +492,11 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
 
     public void sendUpdateEntriesResponse(UpdateEntriesResponse<K, V> response) {
         var message = this.messageSerDe.serializeUpdateEntriesResponse(response);
+        this.dispatchResponse(message);
+    }
+
+    public void sendEvictResponse(EvictEntriesResponse<K> response) {
+        var message = this.messageSerDe.serializeEvictEntriesResponse(response);
         this.dispatchResponse(message);
     }
 
@@ -577,4 +652,5 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
             this.disposer.dispose();
         }
     }
+
 }

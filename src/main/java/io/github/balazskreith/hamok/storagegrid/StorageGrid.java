@@ -510,6 +510,13 @@ public class StorageGrid implements Closeable {
         return result;
     }
 
+    void addStorageInGrid(StorageInGrid storageInGrid) {
+        this.storages.put(storageInGrid.getIdentifier(), storageInGrid);
+        storageInGrid.observableClosed().subscribe(storageId -> {
+            this.storages.remove(storageId);
+        });
+    }
+
     /**
      * Observable event fired when errors occur in the grid
      * @return Observable event

@@ -1,10 +1,11 @@
 package io.github.balazskreith.hamok.storagegrid;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.MapUtils;
+import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.memorystorages.ConcurrentMemoryStorage;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
 import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
 import io.reactivex.rxjava3.core.Observable;
@@ -37,6 +38,7 @@ public class ReplicatedStorageBuilder<K, V> {
     private int maxMessageKeys = 0;
     private int maxMessageValues = 0;
     private Consumer<StorageInGrid> storageInGridListener = null;
+    private boolean throwExceptionOnRequestTimeout = true;
 
     ReplicatedStorageBuilder() {
 
@@ -104,6 +106,11 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
+    public ReplicatedStorageBuilder<K, V> setThrowingExceptionOnRequestTimeout(boolean value) {
+        this.throwExceptionOnRequestTimeout = value;
+        return this;
+    }
+
 
     // make it not public yet, as storage also have a binary operator to merge the results
     ReplicatedStorageBuilder<K, V> setMergeOperator(BinaryOperator<V> mergeOperator) {
@@ -111,7 +118,7 @@ public class ReplicatedStorageBuilder<K, V> {
         return this;
     }
 
-    private Function<Message, Iterator<Message>> createResponseMessageChunker() {
+    private Function<Models.Message.Builder, Iterator<Models.Message.Builder>> createResponseMessageChunker() {
         if (this.maxMessageKeys < 1 && this.maxMessageValues < 1) {
             return ResponseMessageChunker.createSelfIteratorProvider();
         }
@@ -159,13 +166,16 @@ public class ReplicatedStorageBuilder<K, V> {
         var localEndpointSet = Set.of(this.grid.endpoints().getLocalEndpointId());
         var responseMessageChunker = this.createResponseMessageChunker();
         var depotProvider = this.createDepotProvider();
-
+        var storageEndpointConfig = new StorageEndpointConfig(
+                ReplicatedStorage.PROTOCOL_NAME,
+                this.throwExceptionOnRequestTimeout
+        );
         var storageEndpoint = new StorageEndpoint<K, V>(
                 this.grid,
                 actualMessageSerDe,
                 responseMessageChunker,
                 depotProvider,
-                ReplicatedStorage.PROTOCOL_NAME
+                storageEndpointConfig
         ) {
             @Override
             protected String getStorageId() {
@@ -191,13 +201,18 @@ public class ReplicatedStorageBuilder<K, V> {
             }
 
             @Override
-            protected void sendNotification(Message message) {
+            protected void sendNotification(Models.Message.Builder message) {
                 grid.send(message);
             }
 
             @Override
-            protected void sendRequest(Message message) {
-                var messageType = MessageType.valueOfOrNull(message.type);
+            protected void sendRequest(Models.Message.Builder message) {
+                var messageType = MessageType.valueOfOrNull(
+                        Utils.supplyIfTrue(
+                                message.hasType(),
+                                message::getType
+                        )
+                );
                 if (messageType == null) {
                     grid.send(message);
                     return;
@@ -216,7 +231,7 @@ public class ReplicatedStorageBuilder<K, V> {
             }
 
             @Override
-            protected void sendResponse(Message message) {
+            protected void sendResponse(Models.Message.Builder message) {
                 grid.send(message);
             }
         };
@@ -234,7 +249,7 @@ public class ReplicatedStorageBuilder<K, V> {
             }
 
             @Override
-            public void accept(Message message) {
+            public void accept(Models.Message message) {
                 storageEndpoint.receive(message);
             }
 
@@ -256,6 +271,11 @@ public class ReplicatedStorageBuilder<K, V> {
             @Override
             public Observable<String> observableClosed() {
                 return result.events().closingStorage();
+            }
+
+            @Override
+            public StorageEndpoint.Stats storageEndpointStats() {
+                return storageEndpoint.metrics();
             }
         };
         storageInGridListener.accept(storageInGrid);

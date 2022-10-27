@@ -174,14 +174,21 @@ class RaccoonRouter {
                 racoon,
                 true
         );
-        this.peers.put(peerId, item);
-        racoon.outboundEvents().subscribe(InboundEvents.createFrom(this.receivedEvents));
+        if (this.peers.containsKey(peerId)) {
+            logger.warn("Raccoon {} is already part of the grid", peerId);
+            return;
+        }
         racoon.joinedRemotePeerId().subscribe(joinedRemotePeerId -> {
             logger.info("{} reported a remote racoon {} joined to the mesh", racoon.getId(), joinedRemotePeerId);
         });
         racoon.detachedRemotePeerId().subscribe(detachedRemotePeerId -> {
             logger.info("{} reported a remote racoon {} detached from the mesh", racoon.getId(), detachedRemotePeerId);
         });
+        for (var remotePeer : this.peers.values()) {
+            remotePeer.racoon.addRemotePeerId(peerId);
+            racoon.addRemotePeerId(remotePeer.peerId);
+        }
+        racoon.outboundEvents().subscribe(InboundEvents.createFrom(this.receivedEvents));
         logger.info("Added {} to the router", peerId);
     }
 

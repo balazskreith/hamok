@@ -1,11 +1,12 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.UuidTools;
+import io.github.balazskreith.hamok.raccoons.events.EndpointStatesNotification;
 import io.github.balazskreith.hamok.raccoons.events.Events;
 import io.github.balazskreith.hamok.raccoons.events.InboundEvents;
 import io.github.balazskreith.hamok.raccoons.events.OutboundEvents;
 import io.github.balazskreith.hamok.rxutils.RxAtomicReference;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
@@ -46,6 +47,7 @@ public class Raccoon implements Disposable, Closeable {
     public Subject<LogEntry> committedEntries = PublishSubject.create();
     private final Subject<CompletableFuture<Boolean>> requestStorageSync = PublishSubject.create();
     private final Subject<RaftState> changedState = PublishSubject.create();
+    private final Subject<UUID> inactiveRemotePeerId = PublishSubject.create();
     private final RxAtomicReference<UUID> actualLeaderId = new RxAtomicReference<>(null, UuidTools::equals);
     private final Scheduler scheduler;
 //    private final RaccoonExecutors
@@ -119,13 +121,17 @@ public class Raccoon implements Disposable, Closeable {
                 return;
             }
             state.receiveEndpointNotification(notification);
+            this.processEndpointStateNotification(notification);
+        }));
+
+        this.disposer.add(this.outboundEvents.endpointStateNotifications().subscribe(endpointStatesNotification -> {
+            this.processEndpointStateNotification(endpointStatesNotification);
         }));
 
         this.disposer.add(Disposable.fromRunnable(() -> {
             this.stop();
         }));
     }
-
 
     public void start() {
         if (this.timer.get() != null) {
@@ -183,11 +189,11 @@ public class Raccoon implements Disposable, Closeable {
 
     public Observable<LogEntry> committedEntries() { return this.committedEntries.observeOn(Schedulers.single()); }
 
-    public Observable<CompletableFuture<Boolean>> syncRequests() { return this.requestStorageSync; }
-
     public Observable<UUID> joinedRemotePeerId() { return this.remotePeers.joinedRemoteEndpointIds().observeOn(Schedulers.computation()); }
 
     public Observable<UUID> detachedRemotePeerId() { return this.remotePeers.detachedRemoteEndpointIds().observeOn(Schedulers.computation()); }
+
+    public Observable<UUID> inactiveRemotePeerId() { return this.inactiveRemotePeerId; }
 
     /**
      * Returns the index of the entry submitted to the leader
@@ -196,7 +202,7 @@ public class Raccoon implements Disposable, Closeable {
      * @param entry
      * @return
      */
-    public boolean submit(Message entry) {
+    public boolean submit(Models.Message entry) {
         var state = this.actual.get();
         if (state == null) {
             return false;
@@ -255,7 +261,7 @@ public class Raccoon implements Disposable, Closeable {
     }
 
     public Set<UUID> getRemoteEndpointIds() {
-        return this.remotePeers.getActiveRemotePeerIds();
+        return this.remotePeers.getRemotePeerIds();
     }
 
     public void addRemotePeerId(UUID peerId) {
@@ -279,6 +285,10 @@ public class Raccoon implements Disposable, Closeable {
         return result;
     }
 
+    public Observable<CompletableFuture<Boolean>> requestedStorageSync() {
+        return this.requestStorageSync;
+    }
+
     void changeState(AbstractState successor) {
         if (successor == null) {
             if (!this.actual.compareAndSet(null, null)) {
@@ -300,5 +310,14 @@ public class Raccoon implements Disposable, Closeable {
         successor.start();
     }
 
-
+    private void processEndpointStateNotification(EndpointStatesNotification notification) {
+        var reportedActivePeerIds = notification.activeEndpointIds();
+        var remotePeerIds = this.remotePeers.getRemotePeerIds();
+        for (var remotePeerId : remotePeerIds) {
+            if (!reportedActivePeerIds.contains(remotePeerId)) {
+                // inactive remote peer id
+                this.inactiveRemotePeerId.onNext(remotePeerId);
+            }
+        }
+    }
 }

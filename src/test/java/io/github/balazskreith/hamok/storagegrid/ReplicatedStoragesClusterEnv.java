@@ -35,7 +35,6 @@ public class ReplicatedStoragesClusterEnv {
     private int maxRetentionTimeInMs = 0;
     private int maxCollectedStorageEvents = 1;
     private int maxCollectedStorageTimeInMs = 0;
-    private boolean autoDiscovery = false;
     private AtomicReference<StorageGrid> leaderGrid = new AtomicReference<>(null);
 
     public ReplicatedStoragesClusterEnv setMaxRetention(int maxRetentionTimeInMs) {
@@ -62,12 +61,6 @@ public class ReplicatedStoragesClusterEnv {
         return this;
     }
 
-    public ReplicatedStoragesClusterEnv setAutoDiscovery(boolean value) {
-        this.requireNotCreated();
-        this.autoDiscovery = value;
-        return this;
-    }
-
     public void clear() {
         this.euStorage.clear();
         this.usStorage.clear();
@@ -78,17 +71,14 @@ public class ReplicatedStoragesClusterEnv {
         this.euWest = StorageGrid.builder()
                 .withContext("Eu West")
                 .withRaftMaxLogRetentionTimeInMs(this.maxRetentionTimeInMs)
-                .withAutoDiscovery(this.autoDiscovery)
                 .build();
         this.usEast = StorageGrid.builder()
                 .withContext("US east")
                 .withRaftMaxLogRetentionTimeInMs(this.maxRetentionTimeInMs)
-                .withAutoDiscovery(this.autoDiscovery)
                 .build();
         this.asEast = StorageGrid.builder()
                 .withContext("AS east")
                 .withRaftMaxLogRetentionTimeInMs(this.maxRetentionTimeInMs)
-                .withAutoDiscovery(this.autoDiscovery)
                 .build();
 
         Function<Integer, byte[]> intEnc = i -> ByteBuffer.allocate(4).putInt(i).array();
@@ -189,17 +179,6 @@ public class ReplicatedStoragesClusterEnv {
         this.router.add(euWest.endpoints().getLocalEndpointId(), euWest.transport());
         this.router.add(usEast.endpoints().getLocalEndpointId(), usEast.transport());
         this.router.add(asEast.endpoints().getLocalEndpointId(), asEast.transport());
-
-        if (!this.autoDiscovery) {
-            return;
-        }
-
-
-        if (0 < timeoutInMs) {
-            CompletableFuture.allOf(euWestIsReady, usEastIsReady, asEastIsReady).get(timeoutInMs, TimeUnit.MILLISECONDS);
-        } else {
-            CompletableFuture.allOf(euWestIsReady, usEastIsReady, asEastIsReady).get();
-        }
     }
 
     public void awaitLeader(int timeoutInMs) throws InterruptedException {

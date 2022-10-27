@@ -1,18 +1,20 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.KeyValuePair;
+import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.raccoons.events.*;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicReference;
 
 class LeaderState extends AbstractState {
 
@@ -28,12 +30,15 @@ class LeaderState extends AbstractState {
      */
     private final Map<UUID, KeyValuePair<UUID, Long>> sentRequests = new ConcurrentHashMap<>();
     private final int currentTerm;
+    private final Set<UUID> unsyncedRemotePeers = new HashSet<>();
+    private final AtomicReference<Set<UUID>> activeRemotePeerIds;
 
     LeaderState(
             Raccoon base
     ) {
         super(base);
         this.currentTerm = this.syncedProperties().currentTerm.incrementAndGet();
+        this.activeRemotePeerIds = new AtomicReference<>(this.remotePeers().getRemotePeerIds());
     }
 
     @Override
@@ -49,8 +54,8 @@ class LeaderState extends AbstractState {
     }
 
     @Override
-    public boolean submit(Message entry) {
-        logger.trace("{} submitted entry started", this.getLocalPeerId());
+    public boolean submit(Models.Message entry) {
+        logger.trace("{} submitted entry started for message {}", this.getLocalPeerId(), entry);
         this.logs().submit(this.currentTerm, entry);
         return true;
     }
@@ -65,12 +70,38 @@ class LeaderState extends AbstractState {
 
     @Override
     void receiveVoteResponse(RaftVoteResponse response) {
-
+        var remotePeers = this.remotePeers();
+        if (response.sourcePeerId() != null && remotePeers.get(response.sourcePeerId()) != null) {
+            // let's keep up to date the last touches
+            remotePeers.touch(response.sourcePeerId());
+        }
     }
 
     @Override
     void receiveRaftAppendEntriesRequestChunk(RaftAppendEntriesRequestChunk request) {
+        if (request == null || request.term() < this.currentTerm) {
+            return;
+        }
+        if (request.leaderId() == null) {
+            logger.warn("Append Request Chunk is received without leaderId {}", request);
+            return;
 
+        }
+        if (UuidTools.equals(request.leaderId(), this.getLocalPeerId())) {
+            // loopback message?
+            return;
+        }
+        if (this.currentTerm < request.term()) {
+            logger.warn("Current term of the leader is {}, and received Request Chunk {} have higher term.");
+            this.follow();
+            return;
+        }
+        // terms are equal
+        logger.warn("Append Request Chunk is received from another leader in the same term. Selecting one leader in this case who has higher id. {}", request);
+        if (this.getLocalPeerId().getMostSignificantBits() < request.leaderId().getMostSignificantBits()) {
+            // only one can remain!
+            this.follow();
+        }
     }
 
     @Override
@@ -86,7 +117,7 @@ class LeaderState extends AbstractState {
             return;
         }
         // now we are talking in my term...
-
+        logger.trace("Received RaftAppendEntriesResponse {}", response);
         var remotePeers = this.remotePeers();
         if (UuidTools.notEquals(this.getLocalPeerId(), response.sourcePeerId())) {
             remotePeers.touch(response.sourcePeerId());
@@ -114,7 +145,7 @@ class LeaderState extends AbstractState {
         var logs = this.logs();
         var props = this.syncedProperties();
         var peerNextIndex = response.peerNextIndex();
-        var remotePeerIds = remotePeers.getActiveRemotePeerIds();
+        var remotePeerIds = remotePeers.getRemotePeerIds();
 
         props.nextIndex.put(sourcePeerId, peerNextIndex);
         props.matchIndex.put(sourcePeerId, peerNextIndex - 1);
@@ -135,7 +166,7 @@ class LeaderState extends AbstractState {
                     ++matchCount;
                 }
             }
-//            logger.info("logIndex: {}, matchCount: {}, remotePeerIds: {} commit: {}", logEntry.index(), matchCount, remotePeerIds.size(), remotePeerIds.size() + 1 < matchCount * 2);
+            logger.trace("logIndex: {}, matchCount: {}, remotePeerIds: {} commit: {}", logEntry.index(), matchCount, remotePeerIds.size(), remotePeerIds.size() + 1 < matchCount * 2);
             if (remotePeerIds.size() + 1 < matchCount * 2) {
                 maxCommitIndex = Math.max(maxCommitIndex, logEntry.index());
             }
@@ -165,13 +196,14 @@ class LeaderState extends AbstractState {
         var hashAfter = remotePeers.hashCode();
         if (hashBefore == hashAfter) {
             // if nothing has changed we just acknoledge the hello
-            this.sendEndpointStateNotification(Set.of(remotePeerId));
+            this.sendEndpointStateNotification(Set.of(remotePeerId), this.activeRemotePeerIds.get());
             return;
         }
+        this.updateActiveRemotePeerIds();
 
         // otherwise we send the new situation to all peers
         // and request the new peer to perform a sync
-        this.sendEndpointStateNotification(remotePeers.getActiveRemotePeerIds());
+        this.sendEndpointStateNotification(remotePeers.getRemotePeerIds(), this.activeRemotePeerIds.get());
     }
 
     @Override
@@ -182,9 +214,8 @@ class LeaderState extends AbstractState {
     @Override
     public void run() {
         this.updateFollowers();
-        var config = this.config();
-        if (config.autoDiscovery()) {
-            this.checkRemotePeers();
+        if (this.updateActiveRemotePeerIds()) {
+            this.sendEndpointStateNotification(remotePeers().getRemotePeerIds(), this.activeRemotePeerIds.get());
         }
         if (this.remotePeers().size() < 1) {
             logger.warn("Leader endpoint become a follower because no remote endpoint is available");
@@ -192,42 +223,39 @@ class LeaderState extends AbstractState {
         }
     }
 
-    private void checkRemotePeers() {
+    /**
+     *
+     * @return true if anything changed in the active remote peer ids, false otherwise
+     */
+    private boolean updateActiveRemotePeerIds() {
         var config = this.config();
-        var remotePeers = this.remotePeers();
         var now = Instant.now().toEpochMilli();
         if (this.lastRemoteEndpointChecked < 0) {
-            this.sendEndpointStateNotification(remotePeers.getActiveRemotePeerIds());
             this.lastRemoteEndpointChecked = now;
-            return;
+            return false;
         } else if (now - this.lastRemoteEndpointChecked < config.peerMaxIdleTimeInMs()) {
-            return;
+            return false;
         }
-        boolean endpointStateChanged = false;
+        this.lastRemoteEndpointChecked = now;
 
+        var currentActiveRemotePeerIds = this.activeRemotePeerIds.get();
+        var remotePeers = this.remotePeers();
+        if (config.peerMaxIdleTimeInMs() < 1) {
+            this.activeRemotePeerIds.set(remotePeers.getRemotePeerIds());
+            return !SetUtils.isContentsEqual(currentActiveRemotePeerIds, this.activeRemotePeerIds.get());
+        }
+
+        var newActiveRemotePeerIds = new HashSet<UUID>();
         for (var it = remotePeers.iterator(); it.hasNext(); ) {
             var remotePeer = it.next();
-            var peerId = remotePeer.id();
-            if (0 < config.peerMaxIdleTimeInMs() && config.peerMaxIdleTimeInMs() < now - remotePeer.touched()) {
-                logger.warn("Detach endpoint {} at leader state due to inactivity", peerId, this.getLocalPeerId());
-                remotePeers.detach(peerId);
-                endpointStateChanged = true;
+            if (config.peerMaxIdleTimeInMs() < now - remotePeer.touched()) {
                 continue;
             }
+            newActiveRemotePeerIds.add(remotePeer.id());
         }
-        if (endpointStateChanged) {
-            logger.info("Active remote peers on {} are {}", this.getLocalPeerId(), String.join(",", remotePeers.getActiveRemotePeerIds().stream().map(UUID::toString).collect(Collectors.toList())));
-            if (0 < remotePeers.getActiveRemotePeerIds().size()) {
-                this.sendEndpointStateNotification(remotePeers.getActiveRemotePeerIds());
-            } else {
-                // This is the endpoint, which become inactive, not the others!
-                logger.info("{} Every remote endpoint become inactive, except this endpoint. Reset is performed", this.getLocalPeerId());
-                remotePeers.reset();
-                this.follow();
-            }
-        }
+        this.activeRemotePeerIds.set(newActiveRemotePeerIds);
+        return !SetUtils.isContentsEqual(currentActiveRemotePeerIds, newActiveRemotePeerIds);
     }
-
 
     private void updateFollowers() {
         var config = this.config();
@@ -250,12 +278,16 @@ class LeaderState extends AbstractState {
 
             var entries = logs.collectEntries(peerNextIndex);
             if (peerNextIndex < logs.getLastApplied()) {
-                logger.warn("{} collected {} entries, but peer {} should need {}. The peer should request a commit sync",
-                        this.getLocalPeerId(),
-                        entries.size(),
-                        peerId,
-                        logs.getNextIndex() - peerNextIndex
-                );
+                if (this.unsyncedRemotePeers.add(peerId)) {
+                    logger.warn("{} collected {} entries, but peer {} should need {}. The peer should request a commit sync",
+                            this.getLocalPeerId(),
+                            entries.size(),
+                            peerId,
+                            logs.getNextIndex() - peerNextIndex
+                    );
+                }
+            } else if (this.unsyncedRemotePeers.isEmpty() == false) {
+                this.unsyncedRemotePeers.remove(peerId);
             }
             var sentRequest = this.sentRequests.get(peerId);
             if (sentRequest != null) {

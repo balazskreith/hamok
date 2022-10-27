@@ -1,7 +1,7 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.raccoons.events.*;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,14 +11,14 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 class CandidateState extends AbstractState {
     private static final Logger logger = LoggerFactory.getLogger(CandidateState.class);
 
     private volatile long started = -1L;
-    private AtomicInteger receivedVotes = new AtomicInteger(1);
+    private Set<UUID> notifiedRemotePeers = Collections.synchronizedSet(new HashSet<>());
+    private Set<UUID> receivedVotes = Collections.synchronizedSet(new HashSet<>());
     private final int electionTerm;
     private volatile boolean wonTheElection = false;
     private final int prevTimedOutElection;
@@ -41,7 +41,8 @@ class CandidateState extends AbstractState {
     }
 
     @Override
-    public boolean submit(Message entry) {
+    public boolean submit(Models.Message entry) {
+        logger.debug("{} got a submit for message {}", this.getClass().getSimpleName(), entry);
         return false;
     }
 
@@ -54,6 +55,12 @@ class CandidateState extends AbstractState {
 
     @Override
     void receiveVoteResponse(RaftVoteResponse response) {
+        var remotePeers = this.remotePeers();
+        if (response.sourcePeerId() != null && remotePeers.get(response.sourcePeerId()) != null) {
+            // let's keep up to date the last touches
+            remotePeers.touch(response.sourcePeerId());
+        }
+
         if (electionTerm < response.term()) {
             // election should dismiss, case should be closed
             logger.info("Candidate received response from a higher term ({}) than the current election term ({}).", response.term(), this.electionTerm);
@@ -68,14 +75,32 @@ class CandidateState extends AbstractState {
         if (!response.voteGranted()) {
             return;
         }
+        this.receivedVotes.add(response.sourcePeerId());
 
-        int receivedVotes = this.receivedVotes.incrementAndGet();
-        int numberOfPeerIds = this.remotePeers().size() + 1; // +1, because of a local racoon!
-        logger.debug("Received vote for leadership: {}, number of peers: {}. activeRemoteEndpointIds: {}", receivedVotes, numberOfPeerIds,
-                String.join(",", remotePeers().getActiveRemotePeerIds().stream().map(Object::toString).collect(Collectors.toList()))
+        int numberOfPeerIds = this.remotePeers().size() + 1; // +1, because of a local raccoon!
+        logger.debug("Received vote for leadership: {}, number of peers: {}. activeRemoteEndpointIds: {}", receivedVotes.size(), numberOfPeerIds,
+                String.join(",", remotePeers().getRemotePeerIds().stream().map(Object::toString).collect(Collectors.toList()))
         );
-        if (numberOfPeerIds < receivedVotes * 2) {
+        if (numberOfPeerIds < receivedVotes.size() * 2) {
             this.wonTheElection = true;
+        }
+        else if (this.notifiedRemotePeers.size() < numberOfPeerIds) {
+            // might happens that a new remote endpoint has been discovered since we started the process.
+            // in this case we resent the vote requests
+            for (var it = remotePeers.iterator(); it.hasNext(); ) {
+                var remotePeer = it.next();
+                if (!notifiedRemotePeers.contains(remotePeer.id())) {
+                    var request = new RaftVoteRequest(
+                            remotePeer.id(),
+                            this.electionTerm,
+                            this.config().id(),
+                            logs().getNextIndex() - 1,
+                            syncedProperties().currentTerm.get()
+                    );
+                    this.sendVoteRequest(request);
+                    logger.info("Send vote request to {} after the candidacy has been started", request);
+                }
+            }
         }
     }
 
@@ -116,15 +141,6 @@ class CandidateState extends AbstractState {
         if (config.electionTimeoutInMs() < elapsedTimeInMs) {
             // election timeout
             logger.warn("{} Timeout occurred during the election process (electionTimeoutInMs: {}, elapsedTimeInMs: {}, respondedRemotePeerIds: {}). This can be a result because of split vote. previously timed out elections: {}. elapsedTimeInMs: {}", this.getLocalPeerId(), config.electionTimeoutInMs(), elapsedTimeInMs, this.respondedRemotePeerIds.size(), this.prevTimedOutElection, elapsedTimeInMs);
-            if (config.autoDiscovery()) {
-                // if we have performed a numerous election, but no one has responded,
-                // then we need to assume we fall out from the grid
-                if (respondedRemotePeerIds.size() < 1 && 2 < this.prevTimedOutElection) {
-                    remotePeers().reset();
-                    this.follow();
-                    return;
-                }
-            }
             this.follow(this.prevTimedOutElection + 1);
             return;
         }
@@ -132,12 +148,15 @@ class CandidateState extends AbstractState {
     }
 
     void start() {
+        // voting for myself!
+        this.receivedVotes.add(this.config().id());
+
         Schedulers.computation().scheduleDirect(() -> {
             var config = this.config();
             var props = this.syncedProperties();
             var logs = this.logs();
             var remotePeers = this.remotePeers();
-            for (var peerId : remotePeers.getActiveRemotePeerIds() ) {
+            for (var peerId : remotePeers.getRemotePeerIds() ) {
                 var request = new RaftVoteRequest(
                         peerId,
                         this.electionTerm,
@@ -146,8 +165,15 @@ class CandidateState extends AbstractState {
                         props.currentTerm.get()
                 );
                 this.sendVoteRequest(request);
+                logger.info("Send vote request to {}", request);
             }
             this.started = Instant.now().toEpochMilli();
         });
+    }
+
+    @Override
+    protected void sendVoteRequest(RaftVoteRequest request) {
+        this.notifiedRemotePeers.add(request.peerId());
+        super.sendVoteRequest(request);
     }
 }

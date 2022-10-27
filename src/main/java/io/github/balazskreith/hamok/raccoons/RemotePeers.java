@@ -95,7 +95,7 @@ public class RemotePeers {
         return this.activeRemotePeerIds.get().size();
     }
 
-    public Set<UUID> getActiveRemotePeerIds() {
+    public Set<UUID> getRemotePeerIds() {
         return this.activeRemotePeerIds.get();
     }
 

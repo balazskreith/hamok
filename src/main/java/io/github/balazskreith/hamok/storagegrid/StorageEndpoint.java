@@ -1,8 +1,10 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.FailedOperationException;
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.Disposer;
+import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.storagegrid.messages.*;
 import io.reactivex.rxjava3.disposables.Disposable;
@@ -26,46 +28,47 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
 
     // assigned by the grid
     private final StorageGrid grid;
-    private final Function<Message, Iterator<Message>> responseMessageChunker;
+    private final Function<Models.Message.Builder, Iterator<Models.Message.Builder>> responseMessageChunker;
     private final StorageOpSerDe<K, V> messageSerDe;
     private final String protocol;
+    private final StorageEndpointConfig config;
     private final Supplier<Depot<Map<K, V>>> depotProvider;
 
     final Disposer disposer;
     // created by the constructor
     private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private final Map<UUID, PendingResponse> pendingResponses = new ConcurrentHashMap<>();
+    private final Map<String, PendingResponse> pendingResponses = new ConcurrentHashMap<>();
 
-    private final Subject<Message> clearEntriesRequestSubject = PublishSubject.create();
-    private final Subject<Message> getEntriesRequestSubject = PublishSubject.create();
-    private final Subject<Message> deleteEntriesRequestSubject = PublishSubject.create();
-    private final Subject<Message> removeEntriesRequestSubject = PublishSubject.create();
-    private final Subject<Message> evictEntriesRequestSubject = PublishSubject.create();
-    private final Subject<Message> insertEntriesRequestSubject = PublishSubject.create();
-    private final Subject<Message> updateEntriesRequestSubject = PublishSubject.create();
-    private final Subject<Message> insertEntriesNotificationSubject = PublishSubject.create();
-    private final Subject<Message> updateEntriesNotificationSubject = PublishSubject.create();
-    private final Subject<Message> deleteEntriesNotificationSubject = PublishSubject.create();
-    private final Subject<Message> evictEntriesNotificationSubject = PublishSubject.create();
-    private final Subject<Message> removeEntriesNotificationSubject = PublishSubject.create();
-    private final Subject<Message> getSizeRequestSubject = PublishSubject.create();
-    private final Subject<Message> getKeysRequestSubject = PublishSubject.create();
-    private final Subject<Message> clearEntriesNotificationSubject = PublishSubject.create();
-
-
+    private final Subject<Models.Message> clearEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> getEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> deleteEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> removeEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> evictEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> insertEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> updateEntriesRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> insertEntriesNotificationSubject = PublishSubject.create();
+    private final Subject<Models.Message> updateEntriesNotificationSubject = PublishSubject.create();
+    private final Subject<Models.Message> deleteEntriesNotificationSubject = PublishSubject.create();
+    private final Subject<Models.Message> evictEntriesNotificationSubject = PublishSubject.create();
+    private final Subject<Models.Message> removeEntriesNotificationSubject = PublishSubject.create();
+    private final Subject<Models.Message> getSizeRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> getKeysRequestSubject = PublishSubject.create();
+    private final Subject<Models.Message> clearEntriesNotificationSubject = PublishSubject.create();
 
     StorageEndpoint(
             StorageGrid grid,
             StorageOpSerDe<K, V> messageSerDe,
-            Function<Message, Iterator<Message>> responseMessageChunker,
+            Function<Models.Message.Builder, Iterator<Models.Message.Builder>> responseMessageChunker,
             Supplier<Depot<Map<K, V>>> depotProvider,
-            String protocol
+            StorageEndpointConfig config
+
     ) {
         this.grid = grid;
         this.depotProvider = depotProvider;
         this.messageSerDe = messageSerDe;
         this.responseMessageChunker = responseMessageChunker;
-        this.protocol = protocol;
+        this.config = config;
+        this.protocol = config.protocol();
         this.disposer = Disposer.builder()
                 .addDisposable(Disposable.fromRunnable(() -> {
                     this.pendingRequests.values().forEach(p -> {
@@ -75,6 +78,13 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
                             logger.warn("Exception occurred while cancelling request", ex);
                         }
                     });
+                }))
+                .addDisposable(grid.events().detachedRemoteEndpoints().subscribe(detachedEndpointId -> {
+                    logger.info("Removing endpoint {} in storage: {}", detachedEndpointId, this.getStorageId());
+                    for (var pendingRequest : this.pendingRequests.values()) {
+                        logger.warn("Removing {} endpoint from pending Request: {} because the endpoint is detached", detachedEndpointId, pendingRequest);
+                        pendingRequest.removeEndpointId(detachedEndpointId);
+                    }
                 }))
                 .addSubject(this.clearEntriesRequestSubject)
                 .addSubject(this.getEntriesRequestSubject)
@@ -94,15 +104,7 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
                     logger.info("Disposed endpoint for storage: {}, protocol: {}", this.getStorageId(), this.protocol);
                 })
                 .build();
-    }
 
-    void init() {
-        this.disposer.add(this.grid.events().detachedRemoteEndpoints().subscribe(detachedEndpointId -> {
-            for (var pendingRequest : this.pendingRequests.values()) {
-//                logger.warn("Removing {} endpoint from pending Request: {}", detachedEndpointId, pendingRequest);
-                pendingRequest.removeEndpointId(detachedEndpointId);
-            }
-        }));
     }
 
     protected abstract String getStorageId();
@@ -115,14 +117,17 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
         return this.grid.endpoints().getLocalEndpointId();
     }
 
-    public void receive(Message message) {
-        if (message.protocol != null && !message.protocol.equals(this.protocol)) {
-            logger.debug("Ignore received message {}, message protocol: {}, endpoint protocol: {}", message.type, message.protocol, this.protocol);
+    public void receive(Models.Message message) {
+        if (message.hasProtocol() && !message.getProtocol().equals(this.protocol)) {
+            logger.debug("Ignore received message {}, message protocol: {}, endpoint protocol: {}",
+                    Utils.supplyIfTrue(message.hasType(), message::getType),
+                    Utils.supplyIfTrue(message.hasProtocol(), message::getProtocol),
+                    this.protocol);
             // this is not for this endpoint
             return;
         }
 //        logger.info("Message is received from {} type {}, protocol {}", message.sourceId, message.type, message.protocol);
-        var type = MessageType.valueOf(message.type);
+        var type = MessageType.valueOf(Utils.supplyIfTrue(message.hasType(), message::getType));
         switch (type) {
             case CLEAR_ENTRIES_REQUEST -> this.clearEntriesRequestSubject.onNext(message);
             case GET_ENTRIES_REQUEST -> this.getEntriesRequestSubject.onNext(message);
@@ -165,7 +170,7 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
     public StorageEndpoint<K, V> onClearEntriesRequest(Consumer<ClearEntriesRequest> listener) {
         this.disposer.add(this.clearEntriesRequestSubject
                 .map(this.messageSerDe::deserializeClearEntriesRequest)
-                .subscribe(listener)
+                .subscribe(listener, this::onError)
         );
         return this;
     }
@@ -173,7 +178,7 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
     public StorageEndpoint<K, V> onDeleteEntriesRequest(Consumer<DeleteEntriesRequest<K>> listener) {
         this.disposer.add(this.deleteEntriesRequestSubject
                 .map(this.messageSerDe::deserializeDeleteEntriesRequest)
-                .subscribe(listener)
+                .subscribe(listener, this::onError)
         );
         return this;
     }
@@ -181,7 +186,7 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
     public StorageEndpoint<K, V> onRemoveEntriesRequest(Consumer<RemoveEntriesRequest<K>> listener) {
         this.disposer.add(this.deleteEntriesRequestSubject
                 .map(this.messageSerDe::deserializeRemoveEntriesRequest)
-                .subscribe(listener)
+                .subscribe(listener, this::onError)
         );
         return this;
     }
@@ -189,93 +194,93 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
     public StorageEndpoint<K, V> onEvictEntriesRequest(Consumer<EvictEntriesRequest<K>> listener) {
         this.disposer.add(this.evictEntriesRequestSubject
                 .map(this.messageSerDe::deserializeEvictEntriesRequest)
-                .subscribe(listener)
+                .subscribe(listener, this::onError)
         );
         return this;
     }
 
     public StorageEndpoint<K, V> onRemoteEndpointJoined(Consumer<UUID> listener) {
-        this.disposer.add(this.grid.events().joinedRemoteEndpoints().subscribe(listener));
+        this.disposer.add(this.grid.events().joinedRemoteEndpoints().subscribe(listener, this::onError));
         return this;
     }
 
     public StorageEndpoint<K, V> onRemoteEndpointDetached(Consumer<UUID> listener) {
-        this.disposer.add(this.grid.events().detachedRemoteEndpoints().subscribe(listener));
+        this.disposer.add(this.grid.events().detachedRemoteEndpoints().subscribe(listener, this::onError));
         return this;
     }
 
     public StorageEndpoint<K, V> onLeaderIdChanged(Consumer<Optional<UUID>> listener) {
-        this.disposer.add(this.grid.events().changedLeaderId().subscribe(listener));
+        this.disposer.add(this.grid.events().changedLeaderId().subscribe(listener, this::onError));
         return this;
     }
 
     public StorageEndpoint<K, V> onDeleteEntriesNotification(Consumer<DeleteEntriesNotification<K>> listener) {
         this.deleteEntriesNotificationSubject
                 .map(this.messageSerDe::deserializeDeleteEntriesNotification)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onEvictEntriesNotification(Consumer<EvictEntriesNotification<K>> listener) {
         this.evictEntriesNotificationSubject
                 .map(this.messageSerDe::deserializeEvictEntriesNotification)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onUpdateEntriesRequest(Consumer<UpdateEntriesRequest<K, V>> listener) {
         this.updateEntriesRequestSubject
                 .map(this.messageSerDe::deserializeUpdateEntriesRequest)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onInsertEntriesRequest(Consumer<InsertEntriesRequest<K, V>> listener) {
         this.insertEntriesRequestSubject
                 .map(this.messageSerDe::deserializeInsertEntriesRequest)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onInsertEntriesNotification(Consumer<InsertEntriesNotification<K, V>> listener) {
         this.insertEntriesNotificationSubject
                 .map(this.messageSerDe::deserializeInsertEntriesNotification)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onUpdateEntriesNotification(Consumer<UpdateEntriesNotification<K, V>> listener) {
         this.updateEntriesNotificationSubject
                 .map(this.messageSerDe::deserializeUpdateEntriesNotification)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onRemoveEntriesNotification(Consumer<RemoveEntriesNotification<K, V>> listener) {
         this.updateEntriesNotificationSubject
                 .map(this.messageSerDe::deserializeRemoveEntriesNotification)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onGetEntriesRequest(Consumer<GetEntriesRequest<K>> listener) {
         this.getEntriesRequestSubject
                 .map(this.messageSerDe::deserializeGetEntriesRequest)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onGetSizeRequest(Consumer<GetSizeRequest> listener) {
         this.getSizeRequestSubject
                 .map(this.messageSerDe::deserializeGetSizeRequest)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
     public StorageEndpoint<K, V> onClearEntriesNotification(Consumer<ClearEntriesNotification> listener) {
         this.clearEntriesNotificationSubject
                 .map(this.messageSerDe::deserializeClearEntriesNotification)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
@@ -325,7 +330,7 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
     public StorageEndpoint<K, V> onGetKeysRequest(Consumer<GetKeysRequest> listener) {
         this.getKeysRequestSubject
                 .map(this.messageSerDe::deserializeGetKeysRequest)
-                .subscribe(listener);
+                .subscribe(listener, this::onError);
         return this;
     }
 
@@ -376,7 +381,6 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
 
     public void sendGetEntriesResponse(GetEntriesResponse<K, V> response) {
         var message = this.messageSerDe.serializeGetEntriesResponse(response);
-        logger.debug("{} sending {} response to {}", this.grid.endpoints().getLocalEndpointId().toString().substring(0, 8), message.type, message.destinationId);
         this.dispatchResponse(message);
     }
 
@@ -500,71 +504,105 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
         this.dispatchResponse(message);
     }
 
-    private void processResponse(Message message) {
-        if (message.requestId == null) {
+    private void processResponse(Models.Message message) {
+        if (message.hasRequestId() == false) {
             logger.warn("RequestId is null in response {}", message);
             return;
         }
 
-        var chunkedResponse = message.sequence != null && message.lastMessage != null;
-        var onlyOneChunkExists = ZERO.equals(message.sequence) && Boolean.TRUE.equals(message.lastMessage);
+        var chunkedResponse = message.hasSequence() && message.hasLastMessage();
+        var onlyOneChunkExists = ZERO.equals(
+                Utils.supplyIfTrue(message.hasSequence(), message::getSequence)
+        ) && Boolean.TRUE.equals(
+                Utils.supplyIfTrue(message.hasLastMessage(), message::getLastMessage)
+        );
         if (chunkedResponse && !onlyOneChunkExists) {
-            var pendingResponse = this.pendingResponses.get(message.requestId);
+            StringBuffer keyBuf = new StringBuffer();
+            if (message.hasSourceId()) keyBuf.append(message.getSourceId());
+            keyBuf.append("#");
+            if (message.hasRequestId()) keyBuf.append(message.getRequestId());
+            var key = keyBuf.toString();
+
+            var pendingResponse =  this.pendingResponses.get(key);
             if (pendingResponse == null) {
                 pendingResponse = new PendingResponse();
-                this.pendingResponses.put(message.requestId, pendingResponse);
+                this.pendingResponses.put(key, pendingResponse);
             }
             pendingResponse.accept(message);
             if (!pendingResponse.isReady()) {
                 return;
             }
             message = pendingResponse.getResult();
-            this.pendingResponses.remove(message.requestId);
+            this.pendingResponses.remove(key);
         }
-        logger.trace("{} Receiving message for request id {} for type: {}", this.grid.endpoints().getLocalEndpointId(), message.requestId, message.type);
-        var pendingRequest = this.pendingRequests.get(message.requestId);
+        var requestId = Utils.supplyStringToUuidIfTrue(message.hasRequestId(), message::getRequestId);
+        var messageType = Utils.supplyIfTrue(message.hasType(), message::getType);
+        logger.trace("{} Receiving message for request id {} for type: {}",
+                this.grid.endpoints().getLocalEndpointId(),
+                requestId,
+                messageType
+        );
+        var pendingRequest = this.pendingRequests.get(requestId);
         if (pendingRequest == null) {
-            logger.warn("{} No pending request found for message {}", this.grid.endpoints().getLocalEndpointId(), message);
+            logger.warn("No pending request found for message type {}, requestId: {}", messageType, requestId);
             return;
         }
         pendingRequest.accept(message);
     }
 
-    private List<Message> request(Message message, Set<UUID> destinationEndpointIds) throws FailedOperationException {
+    public void awaitCommitSync(int timeoutInMs) throws ExecutionException, InterruptedException, TimeoutException {
+        this.grid.await(timeoutInMs);
+    }
+
+    private List<Models.Message> request(Models.Message.Builder message, Set<UUID> destinationEndpointIds) throws FailedOperationException {
         return this.request(message, destinationEndpointIds, 0);
     }
 
-    private List<Message> request(Message message, Set<UUID> destinationEndpointIds, int retried) throws FailedOperationException {
+    private List<Models.Message> request(Models.Message.Builder message, Set<UUID> destinationEndpointIds, int retried) throws FailedOperationException {
         if (1 < retried) {
             throw new FailedOperationException("Cannot resolve request " + message);
         }
-        var requestId = message.requestId;
+        var requestId = Utils.supplyStringToUuidIfTrue(message.hasRequestId(), message::getRequestId);
+        var destinationId = Utils.supplyStringToUuidIfTrue(message.hasDestinationId(), message::getDestinationId);
         Set<UUID> remoteEndpointIds;
         if (destinationEndpointIds != null && 0 < destinationEndpointIds.size()) {
             remoteEndpointIds = destinationEndpointIds;
-        } else if (message.destinationId != null) {
-            remoteEndpointIds = Set.of(message.destinationId);
+        } else if (destinationId != null) {
+            remoteEndpointIds = Set.of(destinationId);
         } else {
-            remoteEndpointIds = this.defaultResolvingEndpointIds(MessageType.valueOfOrNull(message.type));
+            remoteEndpointIds = this.defaultResolvingEndpointIds(
+                    MessageType.valueOfOrNull(
+                            Utils.supplyIfTrue(message.hasType(), message::getType)
+                    )
+            );
         }
         if (remoteEndpointIds != null && remoteEndpointIds.size() == 1) {
-            message.destinationId = remoteEndpointIds.stream().findFirst().get();
+            Utils.relayUuidToStringIfNotNull(remoteEndpointIds.stream().findFirst()::get, message::setDestinationId);
         }
         logger.debug("Creating request ({}) ({} - {}) remote endpoints: {}", requestId, this.grid.endpoints().getLocalEndpointId(), this.grid.getContext(), remoteEndpointIds);
         if (remoteEndpointIds.size() < 1) {
             return Collections.emptyList();
         }
+
         var pendingRequest = PendingRequest.builder()
                 .withRequestId(requestId)
                 .withPendingEndpoints(remoteEndpointIds)
                 .withTimeoutInMs(this.grid.getRequestTimeoutInMs() * (retried + 1))
+                .withThrowingTimeoutException(this.config.requestCanThrowTimeoutException())
                 .build();
         pendingRequest.onCompleted(() -> {
-            logger.trace("Request {} (type: {}) is completed", requestId, message.type);
+            logger.trace("Request {} (type: {}) is completed",
+                    requestId,
+                    Utils.supplyIfTrue(message.hasType(), message::getType)
+            );
         });
         this.pendingRequests.put(requestId, pendingRequest);
 
-        logger.debug("Sending request (type: {}, id: {}), PendingRequest: {}", message.type, requestId, pendingRequest);
+        logger.debug("Sending request (type: {}, id: {}), PendingRequest: {}",
+                Utils.supplyIfTrue(message.hasType(), message::getType),
+                requestId,
+                pendingRequest
+        );
 
         this.dispatchRequest(message);
 
@@ -572,47 +610,58 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
 //            logger.info("pendingRequest.get {}", Thread.currentThread().getId());
             var result =  pendingRequest.get();
             this.pendingRequests.remove(requestId);
-            logger.debug("Request {} (type: {}) is removed", requestId, message.type);
+            logger.debug("Request {} (type: {}) is removed",
+                    requestId,
+                    Utils.supplyIfTrue(message.hasType(), message::getType)
+            );
             return result;
         } catch (ExecutionException e) {
             logger.warn("Error occurred while processing request {} on endpoint {}, message type {}, protocol: {}",
                     requestId,
                     this.getLocalEndpointId(),
-                    message.type,
-                    message.protocol,
+                    Utils.supplyIfTrue(message.hasType(), message::getType),
+                    Utils.supplyIfTrue(message.hasProtocol(), message::getProtocol),
                     e
             );
             this.pendingRequests.remove(requestId);
-            message.requestId = UUID.randomUUID();
+            message.setRequestId(UUID.randomUUID().toString());
             return this.request(message, destinationEndpointIds, retried + 1);
         } catch (InterruptedException e) {
             logger.warn("Error occurred while processing request {} on endpoint {}, message type {}, protocol: {}",
                     requestId,
                     this.getLocalEndpointId(),
-                    message.type,
-                    message.protocol,
+                    Utils.supplyIfTrue(message.hasType(), message::getType),
+                    Utils.supplyIfTrue(message.hasProtocol(), message::getProtocol),
                     e
             );
             this.pendingRequests.remove(requestId);
-            message.requestId = UUID.randomUUID();
+            message.setRequestId(UUID.randomUUID().toString());
             return this.request(message, destinationEndpointIds, retried + 1);
         } catch (TimeoutException e) {
             logger.warn("Timeout occurred while processing request {} on endpoint {}, message type {}, protocol: {}",
                     requestId,
                     this.getLocalEndpointId(),
-                    message.type,
-                    message.protocol,
+                    Utils.supplyIfTrue(message.hasType(), message::getType),
+                    Utils.supplyIfTrue(message.hasProtocol(), message::getProtocol),
                     e
             );
             this.pendingRequests.remove(requestId);
-            message.requestId = UUID.randomUUID();
+            message.setRequestId(UUID.randomUUID().toString());
             return this.request(message, destinationEndpointIds, retried + 1);
+        } finally {
+            if (pendingRequest.isTimedOut()) {
+                var remainingEndpointIds = Utils.firstNonNull(pendingRequest.getRemainingEndpointIds(), Collections.<UUID>emptySet());
+                this.grid.emitNotRespondingEndpointIds(remainingEndpointIds);
+            }
         }
     }
 
-    private void dispatchResponse(Message message) {
-        message.storageId = this.getStorageId();
-        message.protocol = this.protocol;
+
+
+    private void dispatchResponse(Models.Message.Builder message) {
+        message.setStorageId(this.getStorageId())
+                .setProtocol(this.protocol);
+
         var it = this.responseMessageChunker.apply(message);
         if (it == null) {
             logger.warn("No iterator returned to chunk response. the response itself will be sent unchunked");
@@ -625,32 +674,53 @@ public abstract class StorageEndpoint<K, V> implements AutoCloseable {
         }
     }
 
-    private void dispatchNotification(Message message) {
-        message.storageId = this.getStorageId();
-        message.protocol = this.protocol;
-        if (message.sourceId != null && message.destinationId != null && UuidTools.equals(message.sourceId, message.destinationId)) {
-            this.receive(message);
+    private void dispatchNotification(Models.Message.Builder message) {
+        message.setStorageId(this.getStorageId())
+                .setProtocol(this.protocol);
+        var sourceId = Utils.supplyStringToUuidIfTrue(message.hasSourceId(), message::getSourceId);
+        var destinationId = Utils.supplyStringToUuidIfTrue(message.hasDestinationId(), message::getDestinationId);
+        if (sourceId != null && destinationId != null && UuidTools.equals(sourceId, destinationId)) {
+            this.receive(message.build());
             return;
         }
         this.sendNotification(message);
     }
 
-    private void dispatchRequest(Message message) {
-        message.storageId = this.getStorageId();
-        message.protocol = this.protocol;
+    private void dispatchRequest(Models.Message.Builder message) {
+        message.setStorageId(this.getStorageId())
+                .setProtocol(this.protocol);
         this.sendRequest(message);
     }
 
+    private void onError(Throwable throwable) {
+        logger.warn("Exception occurred while processing request", throwable);
+    }
+
+
     protected abstract Set<UUID> defaultResolvingEndpointIds(MessageType messageType);
-    protected abstract void sendNotification(Message message);
-    protected abstract void sendRequest(Message message);
-    protected abstract void sendResponse(Message message);
+    protected abstract void sendNotification(Models.Message.Builder message);
+    protected abstract void sendRequest(Models.Message.Builder message);
+    protected abstract void sendResponse(Models.Message.Builder message);
+
+    public Stats metrics() {
+        return new Stats(
+                this.pendingRequests.size(),
+                this.pendingResponses.size()
+        );
+    }
 
     @Override
     public void close() {
         if (!this.disposer.isDisposed()) {
             this.disposer.dispose();
         }
+    }
+
+    public record Stats(
+            int numberOfPendingRequests,
+            int numberOfPendingResponses
+    ) {
+
     }
 
 }

@@ -1,12 +1,12 @@
 package io.github.balazskreith.hamok.storagegrid;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.Storage;
 import io.github.balazskreith.hamok.common.Depot;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.memorystorages.ConcurrentMemoryStorage;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
 import io.github.balazskreith.hamok.storagegrid.backups.DistributedBackups;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
 import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
 import io.reactivex.rxjava3.core.Observable;
@@ -38,6 +38,7 @@ public class SeparatedStorageBuilder<K, V> {
     private int iteratorBatchSize = 300;
     private int maxMessageKeys = 0;
     private int maxMessageValues = 0;
+    private boolean throwExceptionOnRequestTimeout = true;
     private DistributedBackups distributedBackups = null;
 
 
@@ -97,6 +98,11 @@ public class SeparatedStorageBuilder<K, V> {
         return this;
     }
 
+    public SeparatedStorageBuilder<K, V> setThrowingExceptionOnRequestTimeout(boolean value) {
+        this.throwExceptionOnRequestTimeout = value;
+        return this;
+    }
+
     public SeparatedStorageBuilder<K, V> setKeyCodec(Function<K, byte[]> encoder, Function<byte[], K> decoder) {
         this.keyEncoder = encoder;
         this.keyDecoder = decoder;
@@ -114,7 +120,7 @@ public class SeparatedStorageBuilder<K, V> {
         return this;
     }
 
-    private Function<Message, Iterator<Message>> createResponseMessageChunker() {
+    private Function<Models.Message.Builder, Iterator<Models.Message.Builder>> createResponseMessageChunker() {
         if (this.maxMessageKeys < 1 && this.maxMessageValues < 1) {
             return ResponseMessageChunker.createSelfIteratorProvider();
         }
@@ -161,12 +167,16 @@ public class SeparatedStorageBuilder<K, V> {
         );
         var responseMessageChunker = this.createResponseMessageChunker();
         var depotProvider = this.createDepotProvider();
+        var storageEndpointConfig = new StorageEndpointConfig(
+                SeparatedStorage.PROTOCOL_NAME,
+                this.throwExceptionOnRequestTimeout
+        );
         var storageEndpoint = new StorageEndpoint<K, V>(
                 this.grid,
                 actualMessageSerDe,
                 responseMessageChunker,
                 depotProvider,
-                SeparatedStorage.PROTOCOL_NAME
+                storageEndpointConfig
         ) {
             @Override
             protected String getStorageId() {
@@ -179,17 +189,17 @@ public class SeparatedStorageBuilder<K, V> {
             }
 
             @Override
-            protected void sendNotification(Message message) {
+            protected void sendNotification(Models.Message.Builder message) {
                 grid.send(message);
             }
 
             @Override
-            protected void sendRequest(Message message) {
+            protected void sendRequest(Models.Message.Builder message) {
                 grid.send(message);
             }
 
             @Override
-            protected void sendResponse(Message message) {
+            protected void sendResponse(Models.Message.Builder message) {
                 grid.send(message);
             }
         };
@@ -216,7 +226,7 @@ public class SeparatedStorageBuilder<K, V> {
             }
 
             @Override
-            public void accept(Message message) {
+            public void accept(Models.Message message) {
                 storageEndpoint.receive(message);
             }
 
@@ -238,6 +248,11 @@ public class SeparatedStorageBuilder<K, V> {
             @Override
             public Observable<String> observableClosed() {
                 return result.events().closingStorage();
+            }
+
+            @Override
+            public StorageEndpoint.Stats storageEndpointStats() {
+                return storageEndpoint.metrics();
             }
         });
 

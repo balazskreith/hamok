@@ -3,11 +3,12 @@ package io.github.balazskreith.hamok.common;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.*;
 import java.util.stream.Collector;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static java.util.Objects.requireNonNull;
 
@@ -25,29 +26,6 @@ public abstract class BatchCollector<T, R extends Collection<T>> implements Coll
 
     public static<K, U extends Collection<K>> Builder<K, U> builder() {
         return new Builder<K, U>();
-    }
-
-
-    public static<K, V> Stream<Map<K, V>> batchedStream(Map<K, V> source, int batchSize) {
-        if (source == null) {
-            return Stream.empty();
-        }
-        if (source.size() < batchSize) {
-            return Stream.of(source);
-        }
-        var result = Stream.<Map<K, V>>builder();
-        var collector = BatchCollector.<Map.Entry<K, V>, Set<Map.Entry<K, V>>>builder().withBatchSize(batchSize)
-                .withEmptyCollectionSupplier(Collections::emptySet)
-                .withMutableCollectionSupplier(HashSet::new)
-                .withConsumer(batch -> {
-                    var entryBatch = batch.stream().collect(Collectors.toMap(
-                            Map.Entry::getKey,
-                            Map.Entry::getValue
-                    ));
-                    result.add(entryBatch);
-                }).build();
-        source.entrySet().stream().collect(collector);
-        return result.build();
     }
 
     /**

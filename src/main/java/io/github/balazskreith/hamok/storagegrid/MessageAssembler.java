@@ -1,9 +1,9 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import io.github.balazskreith.hamok.Models;
 
 public interface MessageAssembler {
     boolean isReady();
-    void process(Message message);
-    Message getResult();
+    void process(Models.Message message);
+    Models.Message getResult();
 }

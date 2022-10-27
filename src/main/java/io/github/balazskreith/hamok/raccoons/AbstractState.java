@@ -1,8 +1,8 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.SetUtils;
 import io.github.balazskreith.hamok.raccoons.events.*;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,7 +26,7 @@ abstract class AbstractState implements Runnable {
 
     public abstract RaftState getState();
 
-    public abstract boolean submit(Message message);
+    public abstract boolean submit(Models.Message message);
 
     abstract void start();
 
@@ -112,13 +112,12 @@ abstract class AbstractState implements Runnable {
         return this.base.requestStorageSync();
     }
 
-    protected void sendEndpointStateNotification(Set<UUID> remotePeerIds) {
+    protected void sendEndpointStateNotification(Set<UUID> remotePeerIds, Set<UUID> activeRemotePeerIds) {
         if (remotePeerIds == null || remotePeerIds.size() < 1) {
             return;
         }
 
-        var remotePeers = this.remotePeers();
-        var activePeerIds = SetUtils.combineAll(remotePeers.getActiveRemotePeerIds(), Set.of(this.getLocalPeerId()));
+        var activePeerIds = SetUtils.combineAll(activeRemotePeerIds, Set.of(this.getLocalPeerId()));
         var logs = logs();
         for (var remotePeerId : remotePeerIds) {
             var notification = new EndpointStatesNotification(
@@ -131,8 +130,6 @@ abstract class AbstractState implements Runnable {
                     syncedProperties().currentTerm.get()
             );
             this.base.outboundEvents.endpointStateNotifications().onNext(notification);
-
         }
-
     }
 }

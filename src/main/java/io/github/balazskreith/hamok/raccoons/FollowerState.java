@@ -1,16 +1,16 @@
 package io.github.balazskreith.hamok.raccoons;
 
-import io.github.balazskreith.hamok.FailedOperationException;
+import io.github.balazskreith.hamok.Models;
+import io.github.balazskreith.hamok.common.Utils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.raccoons.events.*;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -19,6 +19,7 @@ class FollowerState extends AbstractState {
 
     private static final Logger logger = LoggerFactory.getLogger(FollowerState.class);
     private AtomicLong updated = new AtomicLong(Instant.now().toEpochMilli());
+    private AtomicLong voted = new AtomicLong(0);
     private AtomicLong sentHello = new AtomicLong(0);
     private Map<UUID, RaftAppendEntriesRequest> pendingRequests = new ConcurrentHashMap<>();
     private volatile boolean syncRequested = false;
@@ -26,6 +27,7 @@ class FollowerState extends AbstractState {
     private int extraWaitingTime = 0;
     private volatile boolean receivedEndpointNotification = false;
     private volatile int shouldLogOnceFlags = 0;
+    private volatile boolean unsyncRaftLogsLogged = false;
 
     FollowerState(Raccoon base) {
         this(base, 0);
@@ -37,7 +39,11 @@ class FollowerState extends AbstractState {
         if (0 < timedOutElection) {
             var config = this.config();
             var random = new SecureRandom();
-            var extraWaitingTimeInMs = random.nextInt(10 * timedOutElection * config.heartbeatInMs());
+            int extraWaitingTimeInMs = random.nextInt(1 + 10 * config.electionTimeoutInMs());
+            for (int i = 0; i < Math.min(30, timedOutElection); ++i) {
+                int multiplier = random.nextInt(10);
+                extraWaitingTimeInMs += random.nextInt(1 + multiplier * config.heartbeatInMs());
+            }
             this.extraWaitingTime = extraWaitingTimeInMs;
         }
         var props = this.syncedProperties();
@@ -51,7 +57,8 @@ class FollowerState extends AbstractState {
     }
 
     @Override
-    public boolean submit(Message entry) {
+    public boolean submit(Models.Message entry) {
+        logger.debug("{} got a submit for message {}", this.getClass().getSimpleName(), entry);
         return false;
     }
 
@@ -71,23 +78,28 @@ class FollowerState extends AbstractState {
             this.sendVoteResponse(request.createResponse(false));
             return;
         }
+
         var voteGranted = props.votedFor.compareAndSet(null, request.candidateId());
-        if (!voteGranted) {
+        if (voteGranted) {
+            // when we vote for this candidate for the first time,
+            // let's restart the timer, so we wait a bit more to give time to win the election before we run for presidency.
+            this.updated.set(Instant.now().toEpochMilli());
+        } else {
             // maybe we already voted for the candidate itself?
             voteGranted = UuidTools.equals(props.votedFor.get(), request.candidateId());
         }
         var response = request.createResponse(voteGranted);
         logger.info("{} send a vote response {}.", this.getLocalPeerId(), response);
         this.sendVoteResponse(response);
-        if (voteGranted) {
-            // let's restart the timer if we voted for someone.
-            this.updated.set(Instant.now().toEpochMilli());
-        }
     }
 
     @Override
     void receiveVoteResponse(RaftVoteResponse response) {
-        logger.warn("{} received vote response in follower state {}", this.getLocalPeerId(), response);
+        var remotePeers = this.remotePeers();
+        if (response.sourcePeerId() != null && remotePeers.get(response.sourcePeerId()) != null) {
+            // let's keep up to date the last touches
+            remotePeers.touch(response.sourcePeerId());
+        }
     }
 
 
@@ -114,7 +126,9 @@ class FollowerState extends AbstractState {
         this.timedOutElection = 0;
 
         // set the actual leader
-        this.setActualLeaderId(requestChunk.leaderId());
+        if (requestChunk.leaderId() != null) {
+            this.setActualLeaderId(requestChunk.leaderId());
+        }
 
         // let's touch the leader (wierd sentence and I don't want to elaborate)
         if (UuidTools.notEquals(this.getLocalPeerId(), requestChunk.peerId())) {
@@ -154,7 +168,7 @@ class FollowerState extends AbstractState {
         }
         this.pendingRequests.remove(requestChunk.requestId());
 
-        logger.trace("Received RaftAppendEntriesRequest {}", request);
+        logger.trace("Received RaftAppendEntriesRequest {} Entries: {}", request, Utils.firstNonNull(request.entries(), Collections.emptyList()).size());
         if (this.syncRequested) {
             if ((this.shouldLogOnceFlags & 1) == 0) {
                 logger.warn("Commit sync is being executed at the moment");
@@ -174,11 +188,16 @@ class FollowerState extends AbstractState {
         }
 
         if (logs.getNextIndex() < request.leaderNextIndex() - request.entries().size()) {
-            logger.warn("The next index is {}, and the leader index is: {}, the provided entries are: {}. It is insufficient to close the gap for this node. Execute sync request is necessary from the leader to request and the timeout of the raft logs should be large enough to close the gap after the sync.",
-                    logs.getNextIndex(),
-                    request.leaderNextIndex(),
-                    request.entries().size()
-            );
+            if (!this.syncRequested) {
+                logger.warn("The next index is {}, and the leader index is: {}, the provided entries are: {}. It is insufficient to close the gap for this node. Execute sync request is necessary from the leader to request and the timeout of the raft logs should be large enough to close the gap after the sync.",
+                        logs.getNextIndex(),
+                        request.leaderNextIndex(),
+                        request.entries().size()
+                );
+                this.requestStorageSync().whenComplete((res, err) -> {
+                    this.syncRequested = false;
+                });
+            }
             if (!this.receivedEndpointNotification) {
 
             }
@@ -187,6 +206,8 @@ class FollowerState extends AbstractState {
             var response = requestChunk.createResponse(true, logs.getNextIndex(), true);
             this.sendAppendEntriesResponse(response);
             return;
+        } else if (this.unsyncRaftLogsLogged) {
+            this.unsyncRaftLogsLogged = false;
         }
 
         // if we arrived in this point we know that the sync is possible.
@@ -219,20 +240,20 @@ class FollowerState extends AbstractState {
         }
         if (UuidTools.equals(request.destinationPeerId(), this.getLocalPeerId())) {
             logger.warn("Follower received a raft append entries response. That should not happen as only the leader should receive this message. it is ignored {}", request);
-        } else {
+            return;
+        }
+        if (this.getLeaderId() != null || UuidTools.equals(request.destinationPeerId(), this.getLeaderId())) {
+            return;
+        }
+        if (this.syncedProperties().currentTerm.get() < request.term()) {
+            logger.warn("Follower received a raft append response, and the leader term is higher than this, so we change it");
             this.setActualLeaderId(request.destinationPeerId());
         }
-
     }
 
     @Override
     void receiveHelloNotification(HelloNotification notification) {
         // if auto discovery is on and no leader has been elected we add the endpoint
-        if (this.config().autoDiscovery() && this.getLeaderId() == null) {
-            if (UuidTools.notEquals(this.getLocalPeerId(), notification.sourcePeerId())) {
-                this.remotePeers().join(notification.sourcePeerId());
-            }
-        }
         logger.trace("{} received hello notification {}", this.getLocalPeerId(), notification);
     }
 
@@ -248,51 +269,15 @@ class FollowerState extends AbstractState {
             return;
         }
         this.receivedEndpointNotification = true;
-        logger.info("Endpoint state {}", notification);
-        var remotePeers = this.remotePeers();
+//        logger.info("Received endpoint state {}", notification);
+//        var remotePeers = this.remotePeers();
 
-        if (this.config().autoDiscovery() && notification.activeEndpointIds() != null) {
-            // if we do auto discovery then the endpoint state notification updates the state
-            // of the remote endpoints
-            var updatedEndpointIds = Set.copyOf(notification.activeEndpointIds());
-            var currentEndpointIds = remotePeers.getActiveRemotePeerIds();
-            for (var currentEndpointId : currentEndpointIds) {
-                if (updatedEndpointIds.contains(currentEndpointId)) {
-                    continue;
-                }
-                remotePeers.detach(currentEndpointId);
-            }
-            for (var updatedEndpointId : updatedEndpointIds) {
-                if (UuidTools.equals(updatedEndpointId, this.getLocalPeerId())) {
-                    continue;
-                }
-                remotePeers.touch(updatedEndpointId);
-            }
-        }
         if (this.getLeaderId() == null) {
             this.setActualLeaderId(notification.sourceEndpointId());
         }
-        var logs = logs();
-        if (logs.getNextIndex() < notification.leaderNextIndex() - notification.numberOfLogs()) {
-            if (!this.syncRequested) {
-//                this.executeSync(notification.commitIndex());
-            }
-        }
-        this.updated.set(Instant.now().toEpochMilli());
-    }
+        // TODO: compare our active endpoints with the remote one and emit events accordingly
 
-    private void executeSync(int newCommitIndex) {
-        logger.info("Sync is started on {}", this.getLocalPeerId());
-        this.syncRequested = true;
-        var completed = this.requestStorageSync();
-        completed.thenAccept(success -> {
-            logger.info("Sync is finished on {} newCommitIndex: {}, success: {}", this.getLocalPeerId(), newCommitIndex, success);
-            this.syncRequested = false;
-            if (!success) {
-                throw new FailedOperationException("Failed synchronization process");
-            }
-            this.logs().reset(newCommitIndex);
-        });
+        this.updated.set(Instant.now().toEpochMilli());
     }
 
     @Override

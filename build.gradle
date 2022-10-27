@@ -6,7 +6,7 @@ plugins {
 }
 
 group 'io.github.balazskreith.hamok'
-version '0.9.2-beta'
+version '1.0.0'
 
 
 apply plugin: 'maven-publish'
@@ -26,6 +26,7 @@ java {
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.1.5"
     implementation 'org.slf4j:slf4j-api:1.7.30'
+    implementation 'com.google.protobuf:protobuf-java:3.19.4'
 
     testImplementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.11'
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
@@ -73,16 +74,18 @@ publishing {
     }
 }
 
-//signing {
-//    sign publishing.publications.mavenJava
-//}
-
+// for snapshots
 signing {
-    def signingKey = findProperty("signingKey")
-    def signingPassword = findProperty("signingPassword")
-    useInMemoryPgpKeys(signingKey, signingPassword)
     sign publishing.publications.mavenJava
 }
+
+// for production
+//signing {
+//    def signingKey = findProperty("signingKey")
+//    def signingPassword = findProperty("signingPassword")
+//    useInMemoryPgpKeys(signingKey, signingPassword)
+//    sign publishing.publications.mavenJava
+//}
 
 ext.genOutputDir = file("$buildDir/generated-resources")
 

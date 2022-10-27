@@ -7,7 +7,7 @@ Light and convenient library to create a distributed in-memory object storage gr
 Install
 
 ```
-implementation group: 'io.github.balazskreith.hamok', name: 'hamok-java-core', version: '0.9.0-beta'
+implementation group: 'io.github.balazskreith.hamok', name: 'hamok-java-core', version: '1.0.0'
 ```
 
 Usage
@@ -47,15 +47,16 @@ Where `server_1` and `server_2` are created on two different server instances.
 
 ## Intro
 
-Horizontal scalability becomes a standard requirement of designing services today.
-A running service stores objects in the local-memory of the server instance
-they are running on, but they often require sharing objects with each
-other for various purposes.
+Horizontal scalability becomes a standard requirement of designing services.
+An instance of a service stores objects in the local-memory of the server
+it is running on, but it is often required to share ephemeral locally stored objects with 
+another service instance.
 
-For example when two or more clients sending measurements to two server instances,
+For example when two or more clients sending measurements to two instances of the same service,
 at some point one instance might need to query the number of total clients,
 or the last measurement value of a specific client received by another instance.
-This can only be possible if the objects stored by the instances are shared.
+This can only be possible if the objects stored by the instances are shared in some way.
+
 The basic need to share objects between services may not require to add a
 database as an additional dependency. Here comes Hamok into the picture.
 

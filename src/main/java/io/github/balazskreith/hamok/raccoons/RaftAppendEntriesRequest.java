@@ -1,9 +1,9 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.RwLock;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.raccoons.events.RaftAppendEntriesRequestChunk;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,7 +23,7 @@ public class RaftAppendEntriesRequest {
     private int prevLogTerm = -1;
     private int leaderCommit = -1;
     private int leaderNextIndex = -1;
-    private Map<Integer, Message> entries = new HashMap<>();
+    private Map<Integer, Models.Message> entries = new HashMap<>();
 
     private boolean ready = false;
     private RwLock rwLock = new RwLock();
@@ -31,7 +31,7 @@ public class RaftAppendEntriesRequest {
     private final long createdInSec = Instant.now().getEpochSecond();
     private int received = 0;
 
-    private final AtomicReference<List<Message>> entriesList = new AtomicReference<>(Collections.emptyList());
+    private final AtomicReference<List<Models.Message>> entriesList = new AtomicReference<>(Collections.emptyList());
     private final UUID requestId;
 
     RaftAppendEntriesRequest(UUID requestId) {
@@ -70,7 +70,10 @@ public class RaftAppendEntriesRequest {
             this.leaderNextIndex = requestChunk.leaderNextIndex();
         }
         if (requestChunk.entry() != null) {
-            this.entries.put(requestChunk.sequence(), requestChunk.entry());
+            var removedEntry = this.entries.put(requestChunk.sequence(), requestChunk.entry());
+            if (removedEntry != null) {
+                logger.warn("Overwritten log entry for requestChunk {}. removedEntry {}", requestChunk, removedEntry);
+            }
         }
         if (requestChunk.lastMessage()) {
             this.endSeq = requestChunk.sequence();
@@ -117,7 +120,7 @@ public class RaftAppendEntriesRequest {
         return this.leaderNextIndex;
     }
 
-    public List<Message> entries() {
+    public List<Models.Message> entries() {
         return this.entriesList.get();
     }
 

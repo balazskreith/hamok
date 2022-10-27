@@ -11,6 +11,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
@@ -125,6 +127,7 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
                 if (!wasAlone) {
                     return;
                 }
+                logger.trace("Changing standalone mode of replicated storage {} to {}", this.getId(), this.standalone);
                 // dumping items only we have!
                 var keys = this.storage.keys();
                 if (keys.isEmpty()) {
@@ -197,6 +200,7 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
     @Override
     public V set(K key, V value) {
         if (this.standalone) {
+            logger.debug("Set storage {} on {} in standalone mode", this.getId(), this.endpoint.getLocalEndpointId());
             return this.storage.set(key, value);
         }
 
@@ -226,6 +230,7 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
     public boolean delete(K key) {
         Objects.requireNonNull(key, "Key cannot be null");
         if (this.standalone) {
+            logger.trace("Delete key {} from a standalone replica", key);
             return this.storage.delete(key);
         }
         var deletedKeys = this.endpoint.requestDeleteEntries(Set.of(key));
@@ -251,11 +256,22 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
 //        return result;
     }
 
+    /**
+     * blocks the calling thread up until this grid member is not sync with the leader commit index
+     * @param timeoutInMs
+     * @throws ExecutionException
+     * @throws InterruptedException
+     * @throws TimeoutException
+     */
+    public void await(int timeoutInMs) throws ExecutionException, InterruptedException, TimeoutException {
+        this.endpoint.awaitCommitSync(timeoutInMs);
+    }
 
     /**
      *
      * @return
      */
+    @Override
     public Map<K, V> insertAll(Map<K, V> entries) {
         if (this.standalone) {
             return this.storage.insertAll(entries);
@@ -347,8 +363,8 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         throw new RuntimeException("restore operation is not allowed for replicated storage");
     }
 
-    public boolean isJoined() {
-        return this.standalone == false;
+    public boolean isStandalone() {
+        return this.standalone;
     }
 
     public ReplicatedStorageConfig getConfig() {
@@ -367,6 +383,7 @@ public class ReplicatedStorage<K, V> implements DistributedStorage<K, V> {
         try {
             var destinationIds = Set.of(leaderId);
             var keys = this.endpoint.requestGetKeys(destinationIds);
+            logger.debug("Storage {} executeSync, requesting entries: {}", this.storage.getId(), keys);
             var entries = this.inputStreamer.streamKeys(keys)
                     .flatMap(batchedKeys -> this.endpoint.requestGetEntries(batchedKeys, destinationIds).entrySet().stream())
                     .collect(Collectors.toMap(

@@ -1,30 +1,32 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
+import com.google.protobuf.ByteString;
+import io.github.balazskreith.hamok.Models;
+import io.github.balazskreith.hamok.common.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
-class ResponseMessageChunker implements Function<Message, Iterator<Message>> {
+class ResponseMessageChunker implements Function<Models.Message.Builder, Iterator<Models.Message.Builder>> {
     private static final Logger logger = LoggerFactory.getLogger(ResponseMessageChunker.class);
 
-    private static Iterator<Message> EMPTY_ITERATOR = new Iterator<Message>() {
+    private static Iterator<Models.Message.Builder> EMPTY_ITERATOR = new Iterator<Models.Message.Builder>() {
         @Override
         public boolean hasNext() {
             return false;
         }
 
         @Override
-        public Message next() {
+        public Models.Message.Builder next() {
             return null;
         }
     };
 
-    public static Function<Message, Iterator<Message>> createSelfIteratorProvider() {
+    public static Function<Models.Message.Builder, Iterator<Models.Message.Builder>> createSelfIteratorProvider() {
         return message -> createSelfIterator(message);
     }
 
@@ -47,91 +49,100 @@ class ResponseMessageChunker implements Function<Message, Iterator<Message>> {
     }
 
     @Override
-    public Iterator<Message> apply(Message message) {
+    public Iterator<Models.Message.Builder> apply(Models.Message.Builder message) {
         if (message == null) {
             return EMPTY_ITERATOR;
         }
-        if (message.keys == null && message.values == null) {
+        if (message.getKeysCount() < 1 && message.getValuesCount() < 1) {
             return createSelfIterator(message);
-        } else if (message.keys != null && message.values != null) {
-            return this.createEntriesIterator(message);
-        } else if (message.keys != null) {
-            return this.createKeysIterator(message);
+        } else if (0 < message.getKeysCount() && 0 < message.getValuesCount()) {
+            return createEntriesIterator(message);
+        } else if (0 < message.getKeysCount()) {
+            return createKeysIterator(message);
         } else {
             logger.warn("Cannot make an iterator for message, because it does not have keys and values, or just keys", message);
             return createSelfIterator(message);
         }
     }
 
-    private Iterator<Message> createKeysIterator(Message message) {
-        if (message.keys.size() <= this.maxKeys) {
+    private Iterator<Models.Message.Builder> createKeysIterator(Models.Message.Builder message) {
+        if (message.getKeysCount() <= this.maxKeys) {
             return createSelfIterator(message);
         }
-        var keysIt = message.keys.iterator();
-        return new Iterator<Message>() {
-            private int sequence = -1;
+        var keysIt = message.getKeysList().iterator();
+        return new Iterator<Models.Message.Builder>() {
+            private volatile int sequence = 0;
             @Override
             public boolean hasNext() {
                 return keysIt.hasNext();
             }
 
             @Override
-            public Message next() {
-                var result = message.makeCopy();
-                result.keys = new LinkedList<>();
+            public Models.Message.Builder next() {
+//                var result = message.makeCopy();
+                var result = Models.Message.newBuilder(message.build());
+                if (0 < result.getKeysCount()) {
+                    result.clearKeys();
+                }
                 for (int i = 0; i < maxKeys && keysIt.hasNext(); ++i) {
                     var key = keysIt.next();
-                    result.keys.add(key);
+                    result.addKeys(key);
                 }
-                result.sequence = ++sequence;
-                result.lastMessage = keysIt.hasNext() == false;
+                result.setSequence(sequence);
+                result.setLastMessage(keysIt.hasNext() == false);
+                ++this.sequence;
                 return result;
             }
         };
     }
 
-    private Iterator<Message> createEntriesIterator(Message message) {
-        if (Math.max(message.keys.size(), message.values.size()) <= this.maxEntries) {
+    private Iterator<Models.Message.Builder> createEntriesIterator(Models.Message.Builder message) {
+        if (Math.max(message.getKeysCount(), message.getValuesCount()) < this.maxEntries) {
             return createSelfIterator(message);
         }
-        var keysIt = message.keys.iterator();
-        var valuesIt = message.values.iterator();
-        return new Iterator<Message>() {
-            private int sequence = -1;
+        var keysIt = Utils.supplyIfTrueOrElse(0 < message.getKeysCount(), message.getKeysList()::iterator, Collections.<ByteString>emptyList().iterator());
+        var valuesIt = Utils.supplyIfTrueOrElse(0 < message.getValuesCount(), message.getValuesList()::iterator, Collections.<ByteString>emptyList().iterator());
+        return new Iterator<Models.Message.Builder>() {
+            private volatile int sequence = 0;
             @Override
             public boolean hasNext() {
                 return keysIt.hasNext() && valuesIt.hasNext();
             }
 
             @Override
-            public Message next() {
-                var result = message.makeCopy();
-                result.keys = new LinkedList<>();
-                result.values = new LinkedList<>();
+            public Models.Message.Builder next() {
+                var result = Models.Message.newBuilder(message.build());
+                if (0 < result.getKeysCount()) {
+                    result.clearKeys();
+                }
+                if (0 < result.getValuesCount()) {
+                    result.clearValues();
+                }
                 for (int i = 0; i < maxEntries && keysIt.hasNext() && valuesIt.hasNext(); ++i) {
                     var key = keysIt.next();
                     var value = valuesIt.next();
-                    result.keys.add(key);
-                    result.values.add(value);
+                    result.addKeys(key);
+                    result.addValues(value);
                 }
-                result.sequence = ++sequence;
-                result.lastMessage = !keysIt.hasNext() || !valuesIt.hasNext();
+                result.setSequence(sequence);
+                result.setLastMessage(keysIt.hasNext() == false || valuesIt.hasNext() == false);
+                ++this.sequence;
                 return result;
             }
         };
     }
 
 
-    private static Iterator<Message> createSelfIterator(Message message) {
-        var value = new AtomicReference<Message>(message);
-        return new Iterator<Message>() {
+    private static Iterator<Models.Message.Builder> createSelfIterator(Models.Message.Builder message) {
+        var value = new AtomicReference<Models.Message.Builder>(message);
+        return new Iterator<Models.Message.Builder>() {
             @Override
             public boolean hasNext() {
                 return value.get() != null;
             }
 
             @Override
-            public Message next() {
+            public Models.Message.Builder next() {
                 return value.getAndSet(null);
             }
         };

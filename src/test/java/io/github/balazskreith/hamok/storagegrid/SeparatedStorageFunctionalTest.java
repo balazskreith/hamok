@@ -18,7 +18,11 @@ class SeparatedStorageFunctionalTest {
 
     @BeforeAll
     static void init() throws ExecutionException, InterruptedException, TimeoutException {
-        environment = new SeparatedStoragesEnv().create();
+        environment = new SeparatedStoragesEnv()
+                .setRequestMessageLimits(1, 1, collidingItem -> {
+                    logger.warn("Detected colliding key {} value1: {}, value2: {}", collidingItem.key(), collidingItem.value1(), collidingItem.value2());
+                })
+                .create();
         environment.await();
     }
 
@@ -149,6 +153,33 @@ class SeparatedStorageFunctionalTest {
         Assertions.assertNotNull(usStorage.get("one"));
         Assertions.assertEquals(1, euStorage.localSize());
         Assertions.assertEquals(0, usStorage.localSize());
+    }
+
+    @Test
+    void shouldGetAll_1() {
+        var euStorage = environment.getEuStorage();
+        var usStorage = environment.getUsStorage();
+
+        euStorage.set("one", 1);
+        usStorage.set("two", 2);
+        var entriesFromEu = euStorage.getAll(Set.of("one", "two"));
+        var entriesFromUs = euStorage.getAll(Set.of("one", "two"));
+
+        Assertions.assertEquals(1, entriesFromEu.get("one"));
+        Assertions.assertEquals(2, entriesFromEu.get("two"));
+        Assertions.assertEquals(1, entriesFromUs.get("one"));
+        Assertions.assertEquals(2, entriesFromUs.get("two"));
+    }
+
+    @Test
+    void shouldGetAll_2() {
+        var euStorage = environment.getEuStorage();
+        var usStorage = environment.getUsStorage();
+
+        euStorage.set("one", 1);
+        usStorage.set("two", 2);
+        usStorage.set("three", 3);
+        var entriesFromEu = euStorage.getAll(Set.of("one", "two", "three"));
     }
 
     @Test

@@ -1,10 +1,14 @@
 package io.github.balazskreith.hamok.storagegrid;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.MapUtils;
 import io.github.balazskreith.hamok.common.UuidTools;
 import io.github.balazskreith.hamok.rxutils.RxCollector;
 import io.github.balazskreith.hamok.storagegrid.backups.DistributedBackups;
-import io.github.balazskreith.hamok.storagegrid.messages.*;
+import io.github.balazskreith.hamok.storagegrid.messages.DeleteEntriesNotification;
+import io.github.balazskreith.hamok.storagegrid.messages.MessageType;
+import io.github.balazskreith.hamok.storagegrid.messages.StorageOpSerDe;
+import io.github.balazskreith.hamok.storagegrid.messages.UpdateEntriesNotification;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subjects.Subject;
@@ -41,7 +45,6 @@ public class InMemoryDistributedBackups implements DistributedBackups {
     ) {
 
     }
-
 
     private String id;
     private StorageEndpoint<String, String> endpoint;
@@ -137,6 +140,13 @@ public class InMemoryDistributedBackups implements DistributedBackups {
 
     public int getSavedEntriesSize() {
         return this.savedEntries.size();
+    }
+
+    public int getStoredEntriesBytesLength() {
+        return this.storedEntries.values().stream()
+                .map(entry -> entry.value.getBytes().length)
+                .reduce((acc, v) -> acc + v)
+                .orElse(0);
     }
 
     @Override
@@ -331,6 +341,8 @@ public class InMemoryDistributedBackups implements DistributedBackups {
         private int maxTimeInMs = 1000;
         private StorageGrid grid;
         private InMemoryDistributedBackups result = new InMemoryDistributedBackups();
+        private boolean throwExceptionOnRequestTimeout = true;
+
         private Builder() {
 
         }
@@ -355,6 +367,11 @@ public class InMemoryDistributedBackups implements DistributedBackups {
             return this;
         }
 
+        public Builder setThrowingExceptionOnRequestTimeout(boolean value) {
+            this.throwExceptionOnRequestTimeout = value;
+            return this;
+        }
+
         public InMemoryDistributedBackups build() {
             Objects.requireNonNull(this.grid, "Grid must be set to build in memory distributed backups");
             Objects.requireNonNull(this.result.id, "Cannot create an in memory distributed backups without id");
@@ -364,12 +381,16 @@ public class InMemoryDistributedBackups implements DistributedBackups {
                     String::getBytes,
                     bytes -> new String(bytes)
             );
+            var storageEndpointConfig = new StorageEndpointConfig(
+                    DistributedBackups.PROTOCOL_NAME,
+                    this.throwExceptionOnRequestTimeout
+            );
             this.result.endpoint = new StorageEndpoint<String, String>(
                     this.grid,
                     serDe,
                     new ResponseMessageChunker(this.maxEvents, this.maxEvents),
                     MapUtils::makeMapAssignerDepot,
-                    DistributedBackups.PROTOCOL_NAME
+                    storageEndpointConfig
             ) {
                 @Override
                 protected String getStorageId() {
@@ -382,17 +403,17 @@ public class InMemoryDistributedBackups implements DistributedBackups {
                 }
 
                 @Override
-                protected void sendNotification(Message message) {
+                protected void sendNotification(Models.Message.Builder message) {
                     grid.send(message);
                 }
 
                 @Override
-                protected void sendRequest(Message message) {
+                protected void sendRequest(Models.Message.Builder message) {
                     grid.send(message);
                 }
 
                 @Override
-                protected void sendResponse(Message message) {
+                protected void sendResponse(Models.Message.Builder message) {
                     grid.send(message);
                 }
             };
@@ -404,7 +425,7 @@ public class InMemoryDistributedBackups implements DistributedBackups {
                 }
 
                 @Override
-                public void accept(Message message) {
+                public void accept(Models.Message message) {
                     result.endpoint.receive(message);
                 }
 
@@ -428,6 +449,11 @@ public class InMemoryDistributedBackups implements DistributedBackups {
                 @Override
                 public Observable<String> observableClosed() {
                     return result.onClosedSubject;
+                }
+
+                @Override
+                public StorageEndpoint.Stats storageEndpointStats() {
+                    return result.endpoint.metrics();
                 }
             });
             this.result.events = RxCollector.<BufferedEvent>builder()

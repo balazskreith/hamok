@@ -103,6 +103,8 @@ class SeparatedStorageBackupTest {
 
             environment.joinEuWest(10000);
 
+            Thread.sleep(1000);
+
             Assertions.assertEquals(1, euStorage.get("one"));
             Assertions.assertEquals(1, usStorage.get("one"));
             Assertions.assertEquals(1, euStorage.localSize() + usStorage.localSize());

@@ -20,7 +20,7 @@ class ReplicatedStorageFunctionalTest {
     static void init() throws ExecutionException, InterruptedException, TimeoutException {
         environment = new ReplicatedStoragesEnv().create();
         environment.await();
-        environment.awaitLeader(10000);
+        environment.awaitLeader(30000);
     }
 
     @AfterAll

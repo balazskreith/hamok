@@ -4,7 +4,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-public record InsertEntriesNotification<K, V>(Map<K, V> entries, UUID sourceEndpointId, UUID destinationEndpointId) {
+public record InsertEntriesNotification<K, V>(
+        Map<K, V> entries,
+        UUID sourceEndpointId,
+        UUID destinationEndpointId) {
     public static<U, R> OutboundNotificationBuilder<U, R> builder() {
         return new OutboundNotificationBuilder<U, R>();
     }

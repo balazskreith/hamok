@@ -1,13 +1,8 @@
 package io.github.balazskreith.hamok.storagegrid;
 
-import io.github.balazskreith.hamok.common.BatchCollector;
-
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 class InputStreamer<K, V> {
     private final int maxKeys;
@@ -35,20 +30,24 @@ class InputStreamer<K, V> {
         if (this.maxEntries < 1 || source.size() <= this.maxEntries) {
             return Stream.of(source);
         }
-        var result = Stream.<Map<K, V>>builder();
-        var collector = BatchCollector.<Map.Entry<K, V>, Set<Map.Entry<K, V>>>builder()
-                .withBatchSize(this.maxEntries)
-                .withEmptyCollectionSupplier(Collections::emptySet)
-                .withMutableCollectionSupplier(HashSet::new)
-                .withConsumer(batch -> {
-                    var entryBatch = batch.stream().collect(Collectors.toMap(
-                            Map.Entry::getKey,
-                            Map.Entry::getValue
-                    ));
-                    result.add(entryBatch);
-                }).build();
-        source.entrySet().stream().collect(collector);
-        return result.build();
+        var sourceIterator = source.entrySet().iterator();
+        Iterator<Map<K, V>> resultIterator = new Iterator<Map<K, V>>() {
+            @Override
+            public boolean hasNext() {
+                return sourceIterator.hasNext();
+            }
+
+            @Override
+            public Map<K, V> next() {
+                var batch = new HashMap<K, V>();
+                for (int i = 0; i < maxKeys && sourceIterator.hasNext(); ++i) {
+                    var entry = sourceIterator.next();
+                    batch.put(entry.getKey(), entry.getValue());
+                }
+                return batch;
+            }
+        };
+        return StreamSupport.stream(Spliterators.spliteratorUnknownSize(resultIterator, Spliterator.DISTINCT), false);
     }
 
     public Stream<Set<K>> streamKeys(Set<K> source) {
@@ -58,16 +57,22 @@ class InputStreamer<K, V> {
         if (this.maxKeys < 1 || source.size() <= this.maxKeys) {
             return Stream.of(source);
         }
-        var result = Stream.<Set<K>>builder();
-        var collector = BatchCollector.<K, Set<K>>builder()
-                .withBatchSize(this.maxKeys)
-                .withEmptyCollectionSupplier(Collections::emptySet)
-                .withMutableCollectionSupplier(HashSet::new)
-                .withConsumer(batch -> {
-                    result.add(batch);
-                }).build();
-        source.stream().collect(collector);
-        return result.build();
-    }
+        var sourceIterator = source.iterator();
+        Iterator<Set<K>> resultIterator = new Iterator<Set<K>>() {
+            @Override
+            public boolean hasNext() {
+                return sourceIterator.hasNext();
+            }
 
+            @Override
+            public Set<K> next() {
+                var batch = new HashSet<K>();
+                for (int i = 0; i < maxKeys && sourceIterator.hasNext(); ++i) {
+                    batch.add(sourceIterator.next());
+                }
+                return batch;
+            }
+        };
+        return StreamSupport.stream(Spliterators.spliteratorUnknownSize(resultIterator, Spliterator.DISTINCT), false);
+    }
 }

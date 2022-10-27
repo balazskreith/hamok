@@ -1,11 +1,12 @@
 package io.github.balazskreith.hamok.storagegrid;
 
 import io.github.balazskreith.hamok.*;
-import io.github.balazskreith.hamok.common.Disposer;
-import io.github.balazskreith.hamok.common.MapUtils;
-import io.github.balazskreith.hamok.common.SetUtils;
+import io.github.balazskreith.hamok.common.*;
 import io.github.balazskreith.hamok.storagegrid.backups.BackupStorage;
+import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subjects.PublishSubject;
+import io.reactivex.rxjava3.subjects.Subject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * This type of storage assumes every key is modified by one and only one endpoint.
@@ -37,6 +39,7 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
     private final CollectedStorageEvents<K, V> collectedEvents;
     private final InputStreamer<K, V> inputStreamer;
     private final BackupStorage<K, V> backupStorage;
+    private final Subject<DetectedEntryCollision<K, V>> detectedCollisionsSubject = PublishSubject.create();
 
     SeparatedStorage(
             Storage<K, V> storage,
@@ -83,14 +86,12 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 var existingKeys = this.storage.getAll(entries.keySet()).keySet();
                 var updatedEntries = entries.entrySet().stream()
                         .filter(entry -> existingKeys.contains(entry.getKey()))
-                        .collect(Collectors.toMap(
-                                Map.Entry::getKey,
-                                Map.Entry::getValue,
-                                (v1, v2) -> {
-                                    logger.error("Duplicated item tried to be merged at {} storage {} operation: {}, {}", this.storage.getId(), "onUpdateEntriesNotification", v1, v2);
-                                    return v1;
-                                }
+                        .collect(EntryCollector.create(
+                                logger,
+                                detectedCollisionsSubject::onNext,
+                                "onUpdateEntriesNotification at storage: " + this.getId()
                         ));
+
                 if (0 < updatedEntries.size()) {
                     this.storage.setAll(updatedEntries);
                 }
@@ -101,13 +102,10 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                 var oldEntries = this.storage.getAll(entries.keySet());
                 var updatedEntries = entries.entrySet().stream()
                         .filter(entry -> oldEntries.containsKey(entry.getKey()))
-                        .collect(Collectors.toMap(
-                                Map.Entry::getKey,
-                                Map.Entry::getValue,
-                                (v1, v2) -> {
-                                    logger.error("Duplicated item tried to be merged at {} storage {} operation: {}, {}", this.storage.getId(), "onUpdateEntriesRequest", v1, v2);
-                                    return v1;
-                                }
+                        .collect(EntryCollector.create(
+                                logger,
+                                detectedCollisionsSubject::onNext,
+                                "onUpdateEntriesRequest at storage: " + this.getId()
                         ));
                 if (0 < updatedEntries.size()) {
                     this.storage.setAll(updatedEntries);
@@ -155,9 +153,10 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
                             .collect(Collectors.toSet());
                     var restoringEntries = backupEntries.entrySet().stream()
                             .filter(entry -> !collidingEntries.contains(entry.getKey()))
-                            .collect(Collectors.toMap(
-                                    Map.Entry::getKey,
-                                    Map.Entry::getValue
+                            .collect(EntryCollector.create(
+                                    logger,
+                                    detectedCollisionsSubject::onNext,
+                                    "onRemoteEndpointDetached at storage: " + this.getId()
                             ));
                     if (0 < collidingEntries.size()) {
                         logger.warn("There were colliding entries after loading backups for endpoint {}. Collising entries: {}", remoteEndpointId, collidingEntries);
@@ -210,6 +209,10 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         this.inputStreamer = new InputStreamer<>(config.maxMessageKeys(), config.maxMessageValues());
     }
 
+    public Observable<DetectedEntryCollision<K, V>> detectedEntryCollisions() {
+        return this.detectedCollisionsSubject;
+    }
+
     public CollectedStorageEvents<K, V> collectedEvents() {
         return this.collectedEvents;
     }
@@ -247,16 +250,13 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         if (keys.size() <= result.size()) {
             return result;
         }
-        return this.inputStreamer.streamKeys(keys)
-                .map(requestedKeys -> this.endpoint.requestGetEntries(requestedKeys))
-                .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        Map.Entry::getValue,
-                        (v1, v2) -> {
-                            logger.error("Duplicated item tried to be merged at {} storage {} operation: {}, {}", this.storage.getId(), "getAll", v1, v2);
-                            return v1;
-                        }
+        return Stream.concat(Stream.of(result), this.inputStreamer.streamKeys(keys)
+                .map(requestedKeys -> this.endpoint.requestGetEntries(requestedKeys)))
+                .flatMap(entries -> entries.entrySet().stream())
+                .collect(EntryCollector.create(
+                        logger,
+                        detectedCollisionsSubject::onNext,
+                        "getAll operation at storage: " + this.getId()
                 ));
     }
 
@@ -297,13 +297,10 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         var updatedRemoteEntries = this.inputStreamer.streamEntries(remainingEntries)
                 .map(requestedEntries -> this.endpoint.requestUpdateEntries(requestedEntries))
                 .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        Map.Entry::getValue,
-                        (v1, v2) -> {
-                            logger.error("Duplicated item tried to be merged at storage {} operation: setAll. Values: {}, {}", this.storage.getId(), v1, v2);
-                            return v1;
-                        }
+                .collect(EntryCollector.create(
+                        logger,
+                        detectedCollisionsSubject::onNext,
+                        "setAll operation at storage: " + this.getId()
                 ));
         if (updatedRemoteEntries != null && 0 < updatedRemoteEntries.size()) {
             updatedRemoteEntries.keySet().stream().forEach(missingKeys::remove);
@@ -334,13 +331,10 @@ public class SeparatedStorage<K, V> implements DistributedStorage<K, V> {
         var existingRemoteEntries = this.inputStreamer.streamKeys(missingKeys)
                 .map(requestedKeys -> this.endpoint.requestGetEntries(requestedKeys))
                 .flatMap(respondedEntries -> respondedEntries.entrySet().stream())
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        Map.Entry::getValue,
-                        (v1, v2) -> {
-                            logger.error("Duplicated item tried to be merged at {} storage {} operation: {}, {}", this.storage.getId(), "insertAll", v1, v2);
-                            return v1;
-                        }
+                .collect(EntryCollector.create(
+                        logger,
+                        detectedCollisionsSubject::onNext,
+                        "insertAll operation at storage: " + this.getId()
                 ));
         if (0 < existingRemoteEntries.size()) {
             existingRemoteEntries.keySet().stream().forEach(missingKeys::remove);

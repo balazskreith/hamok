@@ -1,5 +1,6 @@
 package io.github.balazskreith.hamok.storagegrid;
 
+import io.github.balazskreith.hamok.common.DetectedEntryCollision;
 import io.github.balazskreith.hamok.common.UuidTools;
 
 import java.nio.ByteBuffer;
@@ -11,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BinaryOperator;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 public class SeparatedStoragesEnv {
@@ -29,6 +31,9 @@ public class SeparatedStoragesEnv {
     private int maxCollectedStorageTimeInMs = 0;
     private int maxBackupEvents = 0;
     private int maxBackupTimeInMs = 0;
+    private int maxKeys = 0;
+    private int maxValues = 0;
+    private Consumer<DetectedEntryCollision<String, Integer>> collisionConsumer = null;
     private AtomicReference<StorageGrid> leaderGrid = new AtomicReference<>(null);
 
     public SeparatedStoragesEnv setMaxRetention(int maxRetentionTimeInMs) {
@@ -41,6 +46,16 @@ public class SeparatedStoragesEnv {
         this.requireNotCreated();
         this.maxBackupEvents = maxEvents;
         this.maxBackupTimeInMs = maxTimeInMs;
+        return this;
+    }
+
+    public SeparatedStoragesEnv setRequestMessageLimits(int maxKeys, int maxValues, Consumer<DetectedEntryCollision<String, Integer>> collisionConsumer) {
+        this.requireNotCreated();
+        this.maxValues = maxValues;
+        this.maxKeys = maxKeys;
+        if (collisionConsumer != null) {
+            this.collisionConsumer = collisionConsumer;
+        }
         return this;
     }
 
@@ -105,6 +120,8 @@ public class SeparatedStoragesEnv {
                 .setMaxCollectedStorageTimeInMs(this.maxCollectedStorageTimeInMs)
                 .setKeyCodec(strEnc, strDec)
                 .setValueCodec(intEnc, intDec)
+                .setMaxMessageValues((this.maxValues))
+                .setMaxMessageKeys(this.maxKeys)
                 .setDistributedBackups(this.euWestBackups)
                 .build();
 
@@ -114,8 +131,16 @@ public class SeparatedStoragesEnv {
                 .setMaxCollectedStorageTimeInMs(this.maxCollectedStorageTimeInMs)
                 .setKeyCodec(strEnc, strDec)
                 .setValueCodec(intEnc, intDec)
+                .setMaxMessageValues((this.maxValues))
+                .setMaxMessageKeys(this.maxKeys)
                 .setDistributedBackups(this.usEastBackups)
                 .build();
+
+        if (this.collisionConsumer != null) {
+            this.usStorage.detectedEntryCollisions().subscribe(collidingItem -> {
+                this.collisionConsumer.accept(collidingItem);
+            });
+        }
 
         this.created = true;
         return this;
@@ -172,11 +197,14 @@ public class SeparatedStoragesEnv {
         this.router.add(euWest.endpoints().getLocalEndpointId(), euWest.transport());
         this.router.add(usEast.endpoints().getLocalEndpointId(), usEast.transport());
 
-        if (0 < timeoutInMs) {
-            CompletableFuture.allOf(euWestIsReady, usEastIsReady).get(timeoutInMs, TimeUnit.MILLISECONDS);
-        } else {
-            CompletableFuture.allOf(euWestIsReady, usEastIsReady).get();
-        }
+        this.usEast.addRemoteEndpointId(this.euWest.endpoints().getLocalEndpointId());
+        this.euWest.addRemoteEndpointId(this.usEast.endpoints().getLocalEndpointId());
+
+//        if (0 < timeoutInMs) {
+//            CompletableFuture.allOf(euWestIsReady, usEastIsReady).get(timeoutInMs, TimeUnit.MILLISECONDS);
+//        } else {
+//            CompletableFuture.allOf(euWestIsReady, usEastIsReady).get();
+//        }
     }
 
     public void awaitLeader(int timeoutInMs) throws InterruptedException {

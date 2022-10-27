@@ -1,7 +1,7 @@
 package io.github.balazskreith.hamok.raccoons;
 
+import io.github.balazskreith.hamok.Models;
 import io.github.balazskreith.hamok.common.RwLock;
-import io.github.balazskreith.hamok.storagegrid.messages.Message;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -149,29 +149,7 @@ class RaftLogs {
         return committedEntries;
     }
 
-//    public void commit() {
-//        var result = this.rwLock.supplyInWriteLock(() -> {
-//            if (this.nextIndex <= this.commitIndex + 1) {
-//                logger.warn("Cannot commit index {}, because there is no next entry to commit. commitIndex: {}, nextIndex: {}", this.commitIndex, this.nextIndex);
-//                return null;
-//            }
-//            var nextCommitIndex = this.commitIndex + 1;
-//            var logEntry = this.entries.get(nextCommitIndex);
-//            if (logEntry == null) {
-//                logger.warn("LogEntry for nextCommitIndex {} is null. it supposed not to be null.", nextCommitIndex);
-//                return null;
-//            }
-//            this.commitIndex = nextCommitIndex;
-//            return logEntry;
-//        });
-//        if (result != null) {
-//            this.committedEntries.onNext(result);
-//        } else {
-//            logger.warn("Nothing to commit");
-//        }
-//    }
-
-    public Integer submit(int term, Message entry) {
+    public Integer submit(int term, Models.Message entry) {
         var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
             var logEntry = new LogEntry(this.nextIndex, term, entry, now);
@@ -195,7 +173,7 @@ class RaftLogs {
      * @param entry
      * @return
      */
-    public LogEntry compareAndOverride(int index, int expectedTerm, Message entry) throws IllegalAccessError{
+    public LogEntry compareAndOverride(int index, int expectedTerm, Models.Message entry) throws IllegalAccessError{
         var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex <= index) {
@@ -224,7 +202,7 @@ class RaftLogs {
      * @param entry the entry of the log to be added
      * @return True if the expected index is the next index and the log is added, false otherwise
      */
-    public boolean compareAndAdd(int expectedNextIndex, int term, Message entry) {
+    public boolean compareAndAdd(int expectedNextIndex, int term, Models.Message entry) {
         var now = Instant.now().toEpochMilli();
         return this.rwLock.supplyInWriteLock(() -> {
             if (this.nextIndex != expectedNextIndex) {
@@ -243,8 +221,8 @@ class RaftLogs {
         });
     }
 
-    public List<Message> collectEntries(int startIndex) {
-        List<Message> result = new ArrayList<>();
+    public List<Models.Message> collectEntries(int startIndex) {
+        List<Models.Message> result = new ArrayList<>();
         return this.rwLock.supplyInReadLock(() -> {
             int missingEntries = 0;
             for (int logIndex = startIndex; logIndex < this.nextIndex; ++logIndex) {
@@ -257,7 +235,7 @@ class RaftLogs {
                 result.add(logEntry.entry());
             }
             if (0 < missingEntries) {
-                logger.info("Requested to collect entries, startIndex: {}, endIndex: {}, but missing {} entries probably in the beginning. The other peer should request a commit sync", startIndex, this.nextIndex, missingEntries);
+                logger.debug("Requested to collect entries, startIndex: {}, endIndex: {}, but missing {} entries probably in the beginning. The other peer should request a commit sync", startIndex, this.nextIndex, missingEntries);
             }
 //            if (0 < result.size()) {
 //                logger.info("Retrieved 0 < result entries");

@@ -135,16 +135,13 @@ public class ReplicatedStoragesEnv {
         this.router.add(euWest.endpoints().getLocalEndpointId(), euWest.transport());
         this.router.add(usEast.endpoints().getLocalEndpointId(), usEast.transport());
 
-        if (0 < timeoutInMs) {
-            CompletableFuture.allOf(euWestIsReady, usEastIsReady).get(timeoutInMs, TimeUnit.MILLISECONDS);
-        } else {
-            CompletableFuture.allOf(euWestIsReady, usEastIsReady).get();
-        }
+        this.usEast.addRemoteEndpointId(this.euWest.endpoints().getLocalEndpointId());
+        this.euWest.addRemoteEndpointId(this.usEast.endpoints().getLocalEndpointId());
     }
 
-    public void awaitLeader(int timeoutInMs) throws InterruptedException {
+    public void awaitLeader(int timeoutInMs) throws InterruptedException, ExecutionException, TimeoutException {
         var started = Instant.now().toEpochMilli();
-        while (this.leaderGrid.get() == null) {
+        while (this.leaderGrid.get() == null || this.euStorage.isStandalone() || this.usStorage.isStandalone()) {
             var now = Instant.now().toEpochMilli();
             if (0 < timeoutInMs && timeoutInMs < now - started) {
                 throw new IllegalStateException("Timeout occurred while waiting for leader");

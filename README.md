@@ -418,7 +418,7 @@ var storage = storageGrid.<Integer, String>createSeparatedStorage()
 
 ## Maven central
 
-https://central.sonatype.dev/publisher/io.github.balazskreith.hamok
+https://central.sonatype.dev/artifact/io.github.balazskreith.hamok/hamok-java-core/1.0.0
 
 ## Contribution
 
